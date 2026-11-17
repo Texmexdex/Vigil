@@ -22,7 +22,7 @@
   --ink:#0a0f14; --ink-2:#0f161d; --ink-3:#151e27; --line:#22303c; --line-2:#2f404f;
   --paper:#f3efe6; --text:#dfe5ea; --muted:#8a98a6; --faint:#5d6b79;
   --fire:#ff6a3d; --ems:#6fd3ff; --police:#a493ff; --traffic:#f0d24a;
-  --weather:#3fe0c5; --industrial:#ff5fb0; --water:#5b83ff; --air:#b7e36a;
+  --weather:#3fe0c5; --industrial:#ff5fb0; --water:#5b83ff; --air:#b7e36a; --aircraft:#cdd6e0;
   --sev4:#ff4d5e; --sev3:#ff9b3d; --sev2:#e8c95a; --sev1:#33424f;
   --ok:#58d68d;
   --f-display:"Instrument Serif","Iowan Old Style",Georgia,serif;
@@ -290,7 +290,7 @@ a{color:inherit}
   <label class="row"><span>River and bayou gauges<small>NOAA water prediction service</small></span><input class="sw" type="checkbox" id="l-gauges"></label>
   <label class="row"><span>Tone on serious new incidents<small>Only while this page is open</small></span><input class="sw" type="checkbox" id="l-chime"></label>
   <h2 style="margin-top:16px">Relay</h2>
-  <p class="hint" style="margin-top:0">TCEQ emission reports cannot be read by a browser directly. Paste the address of your relay to switch them on.</p>
+  <p class="hint" style="margin-top:0" id="relay-hint">Some feeds refuse browsers and need a go-between. A relay beside this page is found automatically. Otherwise paste its address.</p>
   <form class="field" id="relay-form"><input id="relay-q" placeholder="https://your-relay.workers.dev" autocomplete="off" aria-label="Relay address"><button class="btn" type="submit">Save</button></form>
 </div>
 
@@ -315,6 +315,7 @@ const CATS = {
   industrial: { label: 'Industrial', color: '#ff5fb0', icon: 'M3 21V11l5.5 3.5V11l5.5 3.5V4h4.5v17z' },
   water:      { label: 'Water',      color: '#5b83ff', icon: 'M12 2.5c3.8 4.6 6.5 8 6.5 11.5a6.5 6.5 0 0 1-13 0c0-3.5 2.7-6.9 6.5-11.5z' },
   air:        { label: 'Air',        color: '#b7e36a', icon: 'M3 6.6h12V9H3zM3 10.8h18v2.4H3zM3 15h9v2.4H3z' },
+  aircraft:   { label: 'Aircraft',   color: '#cdd6e0', icon: 'M12 2.2l1.9 7 8 4.2v2.2l-8-2-.8 4.6 2.6 1.9v1.6L12 20.4l-3.7 1.3v-1.6l2.6-1.9-.8-4.6-8 2v-2.2l8-4.2z' },
 };
 const SEV_COLOR = { 4: '#ff4d5e', 3: '#ff9b3d', 2: '#e8c95a', 1: '#3fe0c5' };
 const AQI_STEPS = [[50, 'Good', '#3cd070'], [100, 'Moderate', '#f2d544'], [150, 'Unhealthy for sensitive groups', '#ff9b3d'], [200, 'Unhealthy', '#ff4d5e'], [300, 'Very unhealthy', '#b05cff'], [1e9, 'Hazardous', '#a3324f']];
@@ -363,11 +364,14 @@ function polysOf(g) { if (!g) return []; if (g.type === 'Polygon') return [g.coo
 function inRing(lon, lat, ring) { let inside = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside; } return inside; }
 function polyDist(g, lat, lon) { let best = Infinity, c = null; for (const p of polysOf(g)) { if (inRing(lon, lat, p[0])) return { d: 0, at: [lon, lat] }; const step = Math.max(1, Math.floor(p[0].length / 200)); for (let i = 0; i < p[0].length; i += step) { const [x, y] = p[0][i], d = distMi(lat, lon, y, x); if (d < best) { best = d; c = [x, y]; } } } return { d: best, at: c }; }
 function boundsOf(g) { let b = [180, 90, -180, -90]; const walk = c => { if (typeof c[0] === 'number') { b[0] = Math.min(b[0], c[0]); b[1] = Math.min(b[1], c[1]); b[2] = Math.max(b[2], c[0]); b[3] = Math.max(b[3], c[1]); } else c.forEach(walk); }; (g.type === 'GeometryCollection' ? g.geometries : [g]).forEach(x => walk(x.coordinates)); return b; }
-function centralToUTC(str) { // "11/14/2026 04:34 PM" as US Central wall time
+function centralWall(y, mo, d, hh, mi, ss = 0) { // a US Central wall-clock time as a real instant
+  const guess = Date.UTC(y, mo - 1, d, hh, mi, ss);
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(guess)).map(x => [x.type, x.value]));
+  return guess - (Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - guess);
+}
+function centralToUTC(str) { // "11/14/2026 04:34 PM"
   const m = String(str || '').match(/(\d+)\/(\d+)\/(\d+)\s+(\d+):(\d+)\s*(AM|PM)/i); if (!m) return null;
-  const h = (+m[4]) % 12 + (/pm/i.test(m[6]) ? 12 : 0), guess = Date.UTC(+m[3], +m[1] - 1, +m[2], h, +m[5]);
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(guess)).map(x => [x.type, x.value]));
-  return guess - (Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - guess);
+  return centralWall(+m[3], +m[1], +m[2], (+m[4]) % 12 + (/pm/i.test(m[6]) ? 12 : 0), +m[5]);
 }
 const inTexas = () => S.loc.lat > 25.8 && S.loc.lat < 36.6 && S.loc.lon > -106.7 && S.loc.lon < -93.4;
 
@@ -378,7 +382,7 @@ const S = {
   radius: RADII.includes(saved.radius) ? saved.radius : 5,
   cats: Object.assign(Object.fromEntries(Object.keys(CATS).map(k => [k, true])), saved.cats || {}),
   layers: Object.assign({ radar: true, wind: true, jams: true, air: true, gauges: true, cams: false }, saved.layers || {}),
-  chime: !!saved.chime, relay: saved.relay || '', follow: !!saved.follow, chatter: [], chatterCity: '', origin: null,
+  chime: !!saved.chime, relay: saved.relay || '', follow: !!saved.follow, chatter: [], news: [], chatterCity: '', origin: null, autoRelay: '',
   items: new Map(), src: {}, seen: new Map(), token: 0,
   wind: null, cond: null, air: [], gauges: [], jamLines: [], cams: [], nearestAir: null,
   selected: null, tab: 'feed', point: null,
@@ -511,8 +515,10 @@ async function fetchGauges() {
 }
 
 async function fetchWaze() {
-  const q = await get(ags('https://services.arcgis.com/KTcxiTD9dsQw4r7Z/ArcGIS/rest/services/Waze_Traffic/FeatureServer/0', { where: "level IN ('3','4','5')", fields: 'uuid,level,delay,street,city,length,speedKMH,pubMillis', env: bbox(FETCH_MI), n: 1500 }));
-  const segs = (q.features || []).filter(f => f.geometry?.type === 'LineString' && f.geometry.coordinates.length > 1).map(f => { const p = f.properties, c = f.geometry.coordinates, mid = c[Math.floor(c.length / 2)]; return { uuid: String(p.uuid), level: +p.level, delay: +p.delay, len: +p.length, kmh: +p.speedKMH, t: +p.pubMillis, street: p.street || 'Unnamed road', city: (p.city || '').replace(/, TX$/, ''), lon: mid[0], lat: mid[1], geom: f.geometry }; });
+  // closures and standstills are fetched on their own so a rush-hour flood of slow roads can never crowd them out
+  const WZ = 'https://services.arcgis.com/KTcxiTD9dsQw4r7Z/ArcGIS/rest/services/Waze_Traffic/FeatureServer/0', wf = 'uuid,level,delay,street,city,length,speedKMH,pubMillis';
+  const [hard, slow] = await Promise.all([get(ags(WZ, { where: "level IN ('4','5')", fields: wf, env: bbox(FETCH_MI), n: 1000 })), get(ags(WZ, { where: "level='3'", fields: wf, env: bbox(Math.min(FETCH_MI, Math.max(S.radius * 1.5, 8))), n: 1000 })).catch(() => ({ features: [] }))]);
+  const segs = [...(hard.features || []), ...(slow.features || [])].filter(f => f.geometry?.type === 'LineString' && f.geometry.coordinates.length > 1).map(f => { const p = f.properties, c = f.geometry.coordinates, mid = c[Math.floor(c.length / 2)]; return { uuid: String(p.uuid), level: +p.level, delay: +p.delay, len: +p.length, kmh: +p.speedKMH, t: +p.pubMillis, street: p.street || 'Unnamed road', city: (p.city || '').replace(/, TX$/, ''), lon: mid[0], lat: mid[1], geom: f.geometry }; });
   const uniq = new Map(); segs.forEach(s => { const c = s.geom.coordinates, k = s.level + '|' + c[0].join() + '|' + c[c.length - 1].join() + '|' + c.length; if (!uniq.has(k) || uniq.get(k).t > s.t) uniq.set(k, s); }); // the feed repeats segments
   segs.length = 0; segs.push(...uniq.values());
   S.jamLines = segs.map(s => ({ type: 'Feature', properties: { level: s.level }, geometry: s.geom }));
@@ -523,7 +529,7 @@ async function fetchWaze() {
     const t = Math.min(...g.parts.map(o => o.t)), len = g.parts.reduce((n, o) => n + o.len, 0), delayMin = Math.round(Math.max(...g.parts.map(o => o.delay)) / 60), id = g.parts.map(o => o.uuid).sort()[0];
     return { id: 'waze-' + id, cat: 'traffic', sev: closed && Date.now() - t < 2 * 36e5 ? 2 : 1, title: closed ? 'Road closed' : 'Standstill traffic', sub: g.street + (g.city ? ', ' + g.city : ''), lat: near.lat, lon: near.lon, t, url: `https://www.waze.com/live-map/directions?to=ll.${near.lat.toFixed(5)}%2C${near.lon.toFixed(5)}`,
       facts: [['Length', (len / 1609.34).toFixed(2) + ' mi'], closed ? ['Closed since', fmtWhen(t)] : ['Delay', delayMin > 0 ? `about ${delayMin} min` : 'under a minute'], ['Speed', closed ? 'no through traffic' : Math.round(near.kmh * 0.621) + ' mph']],
-      pin: true, tags: !closed && delayMin > 0 ? ['+' + delayMin + ' min'] : [], srcTag: 'Waze / TxDOT' };
+      pin: closed || delayMin >= 8, feed: closed || delayMin >= 8, tags: !closed && delayMin > 0 ? ['+' + delayMin + ' min'] : [], srcTag: 'Waze / TxDOT' };
   });
 }
 
@@ -578,7 +584,12 @@ async function fetchChatter() {
 }
 
 /* TCEQ emission events: needs the relay because TCEQ sends no CORS header. */
-const relayGet = url => get(`${S.relay.replace(/\/+$/, '')}/?u=${encodeURIComponent(url)}`, { type: 'text', timeout: 25000 });
+const relayBase = () => (S.relay || S.autoRelay || '').replace(/\/+$/, '');
+const relayGet = url => get(`${relayBase()}?u=${encodeURIComponent(url)}`, { type: 'text', timeout: 25000 });
+async function probeRelay() { // a relay living beside the page (serve.py, or a /relay function on the host) is picked up by itself
+  if (!/^https?:$/.test(location.protocol)) return;
+  try { const t = await get(location.origin + '/relay', { type: 'text', timeout: 5000 }); if (/^vigil-relay/.test(t)) { S.autoRelay = location.origin + '/relay'; SOURCES.forEach(s => { if (s.relay) S.src[s.id].next = 0; }); tick(); schedule(); } } catch {}
+}
 const geoCache = store.get('vigil.geo', {});
 async function geocode(q, wantAddress) {
   if (q in geoCache) return geoCache[q];
@@ -616,21 +627,102 @@ async function fetchTCEQ() {
   return out;
 }
 
+/* Aircraft: low helicopters and emergency squawks. A helicopter holding over one spot is often the first visible sign of an incident. */
+const acTrack = new Map(), SQUAWK = { 7500: 'unlawful interference', 7600: 'radio failure', 7700: 'general emergency' };
+const HELI_TYPES = /^(EC|AS3|AS5|AS6|B06|B4[0-3]|B2[01]|B5[0-9]{2}$|H1[2-7]|H60|R22|R44|R66|S76|S92|A109|A119|A139|A169|MD5|MD6|MD9|BK17|UH|AH|CH|G2CA|EN28|EN48)/;
+const roleOf = op => /POLICE|SHERIFF|PUBLIC SAFETY|STATE OF TEXAS|PATROL|CUSTOMS|HOMELAND|CONSTABLE/i.test(op) ? 'law enforcement' : /HOSPITAL|MEDICAL|LIFE ?FLIGHT|AIR MED|AIR METHODS|HERMANN|PHI |AIR EVAC|REACH|MED-?TRANS|CHILDREN/i.test(op) ? 'medical' : /NEWS|BROADCAST|TELEVISION|\bTV\b|MEDIA|HELICOPTERS INC|US HELICOPTERS/i.test(op) ? 'news or camera ship' : '';
+async function fetchAircraft() {
+  const reach = Math.max(S.radius, 10), nm = Math.ceil(reach * 0.869);
+  const j = JSON.parse(await relayGet(`https://opendata.adsb.fi/api/v2/lat/${S.loc.lat.toFixed(4)}/lon/${S.loc.lon.toFixed(4)}/dist/${nm}`));
+  const now = Date.now(), out = [];
+  for (const a of j.aircraft || j.ac || []) {
+    if (a.lat == null || a.lon == null || (a.seen_pos != null && a.seen_pos > 60)) continue;
+    const alt = typeof a.alt_baro === 'number' ? a.alt_baro : null, emerg = SQUAWK[a.squawk] || (a.emergency && a.emergency !== 'none' ? a.emergency : '');
+    const heli = a.category === 'A7' || HELI_TYPES.test(a.t || '');
+    if (!emerg && !(heli && alt != null && alt < 3500)) continue;
+    const hist = (acTrack.get(a.hex) || []).filter(p => now - p.t < 10 * 6e4); hist.push({ t: now, lat: a.lat, lon: a.lon }); acTrack.set(a.hex, hist);
+    const holding = hist.length >= 3 && now - hist[0].t >= 150e3 && hist.every(p => distMi(p.lat, p.lon, a.lat, a.lon) < 1.2);
+    const op = (a.ownOp || '').trim(), role = roleOf(op), call = (a.flight || '').trim(), mph = a.gs != null ? Math.round(a.gs * 1.151) : null;
+    out.push({ id: 'ac-' + a.hex, cat: 'aircraft', sev: emerg ? 3 : holding ? 2 : 1, title: emerg ? `Aircraft squawking ${a.squawk || 'emergency'}: ${emerg}` : holding ? 'Helicopter holding over one spot' : 'Helicopter low overhead',
+      sub: [op ? titleCase(op) : 'Operator not listed', a.t, a.r].filter(Boolean).join(' · '), lat: a.lat, lon: a.lon, t: holding ? hist[0].t : now, url: `https://globe.adsb.fi/?icao=${encodeURIComponent(a.hex)}`,
+      facts: [['Callsign', call || 'none'], ['Altitude', alt != null ? alt.toLocaleString() + ' ft' : String(a.alt_baro || 'unknown')], ['Speed', mph != null ? mph + ' mph' : 'unknown'], ['Heading', a.track != null ? compass(a.track) : 'unknown'], ['Registered to', op ? titleCase(op) : 'not listed']],
+      long: emerg ? '' : 'Seen by volunteer ADS-B receivers. Aircraft with transponders off, including some police and military flights, do not appear.', pin: true, tags: [role, holding ? Math.round((now - hist[0].t) / 6e4) + ' min on station' : ''].filter(Boolean), srcTag: 'adsb.fi' });
+  }
+  for (const [hex, hist] of acTrack) if (now - hist[hist.length - 1].t > 10 * 6e4) acTrack.delete(hex);
+  return out;
+}
+
+/* News headlines naming your city, through the relay. Shown in the Chatter tab only. */
+async function fetchNews() {
+  const pt = await nwsPoint().catch(() => null), city = pt && pt.city; if (!city) throw new Error('no place name for this position');
+  const q = `"${city}" (fire OR explosion OR shooting OR evacuation OR hazmat OR flaring OR "chemical leak" OR "shelter in place") sourcecountry:US`;
+  const raw = await relayGet(`https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=artlist&format=json&timespan=6h&maxrecords=25&sort=datedesc`);
+  let j; try { j = JSON.parse(raw); } catch { throw new Error(/limit requests/i.test(raw) ? 'rate limited, will retry' : 'unreadable reply'); }
+  const seen = new Set();
+  S.news = (j.articles || []).map(a => { const m = String(a.seendate || '').match(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/); return { title: a.title, url: a.url, domain: a.domain, t: m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : 0 }; })
+    .filter(a => a.title && /^https?:\/\//.test(a.url) && a.t && !seen.has(a.title.toLowerCase()) && seen.add(a.title.toLowerCase())).slice(0, 20);
+  return [];
+}
+
+/* Other Texas metros. Each one is gated to its own area, so it costs nothing anywhere else. */
+async function fetchAustin() {
+  const rows = await get('https://data.austintexas.gov/resource/dx9v-zd7x.json?traffic_report_status=ACTIVE&$limit=400&$order=published_date%20DESC');
+  return rows.filter(r => +r.latitude && +r.longitude).map(r => {
+    const ty = String(r.issue_reported || 'Incident').replace(/^z/, '').trim(), up = ty.toUpperCase();
+    const cat = /FIRE/.test(up) ? 'fire' : /HIGH WATER|FLOOD/.test(up) ? 'water' : 'traffic', sev = /INJ|URGENT|FATAL|FIRE|HIGH WATER|AUTO\/ ?PED/.test(up) ? 2 : 1, t = Date.parse(r.published_date);
+    return { id: 'atx-' + r.traffic_report_id, cat, sev, title: titleCase(ty), sub: titleCase(r.address || ''), lat: +r.latitude, lon: +r.longitude, t, url: 'https://data.austintexas.gov/Transportation-and-Mobility/Real-Time-Traffic-Incident-Reports/dx9v-zd7x',
+      facts: [['Reported as', ty], ['Agency', titleCase(r.agency || '')], ['Published', fmtWhen(t)], ['Last status change', r.traffic_report_status_date_time ? fmtWhen(Date.parse(r.traffic_report_status_date_time)) : '']], pin: true, srcTag: 'Austin-Travis' };
+  });
+}
+function classifyDallas(nature, priority) {
+  const n = nature.toUpperCase(); let cat = 'police', sev = 1;
+  if (/SUICIDE|CIT\b|MENTAL|WELFARE/.test(n)) return ['ems', 1, 'Welfare call'];
+  if (/ACCIDENT|WRECK|TRAFFIC|STRANDED|BLOCKAGE|HWY|FREEWAY/.test(n)) { cat = 'traffic'; sev = /MAJOR|INJUR|PIN/.test(n) ? 2 : 1; }
+  else if (/FIRE/.test(n)) { cat = 'fire'; sev = 2; }
+  else if (/INJURED|OVERDOSE|DROWN|AMBULANCE|SICK/.test(n)) { cat = 'ems'; sev = 1; }
+  else if (/SHOOT|STAB|CUTTING|ACTIVE|OFFICER|KIDNAP|EXPLOSI|BOMB/.test(n)) sev = 3;
+  else if (/ROBBERY|VIOLENCE|ARMED|BURG.*PROG|ASSAULT|PROWLER|GUN/.test(n)) sev = 2;
+  if (String(priority) === '1' && sev < 2) sev = 2;
+  return [cat, sev, titleCase(nature)];
+}
+async function fetchDallas() {
+  const rows = await get('https://www.dallasopendata.com/resource/9fxf-t2tr.json?$limit=400');
+  const out = []; S.dallasTotal = new Set(rows.map(r => r.incident_number)).size;
+  for (let i = 0; i < rows.length; i += 6) await Promise.all(rows.slice(i, i + 6).map(async r => {
+    if (!r.location) return;
+    const where = (r.block ? r.block + ' ' : '') + String(r.location).replace(/\s*\/\s*/g, ' & ');
+    const pos = await geocode(where + ', Dallas, TX', true); // the feed has no coordinates: only confident street-level matches are placed
+    if (!pos || distMi(32.7767, -96.797, pos.lat, pos.lon) > 30) return;
+    const nature = String(r.nature_of_call || 'Call').replace(/^\s*[\w\/]+\s*-\s*/, '').trim(), [cat, sev, title] = classifyDallas(nature, r.priority);
+    const d = String(r.date || '').match(/^(\d{4})-(\d\d)-(\d\d)/), tm = String(r.time || '').match(/^(\d+):(\d+):?(\d+)?/), t = d && tm ? centralWall(+d[1], +d[2], +d[3], +tm[1], +tm[2], +(tm[3] || 0)) : 0;
+    out.push({ id: 'dal-' + r.incident_number + '-' + (r.unit_number || ''), cat, sev, title, sub: titleCase(where), lat: pos.lat, lon: pos.lon, t, url: 'https://www.dallasopendata.com/Public-Safety/Dallas-Police-Active-Calls/9fxf-t2tr',
+      facts: [['Call type', r.nature_of_call || ''], ['Priority', r.priority || ''], ['Division', r.division || ''], ['Unit', r.unit_number || ''], ['Opened', t ? fmtWhen(t) : '']], long: 'Placed on the map by matching the published block or intersection, so the pin is approximate.', pin: true, tags: r.status ? [String(r.status).toLowerCase()] : [], srcTag: 'Dallas PD' });
+  }));
+  const byCall = new Map(); out.forEach(i => { const k = i.id.split('-').slice(0, 3).join('-'); if (!byCall.has(k)) byCall.set(k, i); }); // several units on one call: show the call once
+  return [...byCall.values()];
+}
+const nearGate = (lat, lon, mi, text) => () => distMi(S.loc.lat, S.loc.lon, lat, lon) > mi ? text : null;
+
+const relayGate = () => relayBase() ? null : 'Needs a relay. See Layers';
 const houstonGate = () => distMi(S.loc.lat, S.loc.lon, 29.7604, -95.3698) > 70 ? 'Only covers the City of Houston' : null;
 const texasGate = () => inTexas() ? null : 'Only covers Texas';
 const SOURCES = [
   { id: 'hec',    name: 'Fire, EMS and police dispatch', org: 'Houston Emergency Center', every: 90,  run: fetchHEC,   gate: houstonGate, url: 'https://cohweb.houstontx.gov/ActiveIncidents/Combined.aspx', note: 'Active calls inside the City of Houston. HPD only publishes crashes and traffic hazards.' },
+  { id: 'austin', name: 'Austin traffic and fire incidents', org: 'Austin-Travis County dispatch', every: 120, run: fetchAustin, gate: nearGate(30.2672, -97.7431, 60, 'Only covers the Austin area'), url: 'https://data.austintexas.gov/Transportation-and-Mobility/Real-Time-Traffic-Incident-Reports/dx9v-zd7x', note: 'Active crashes, hazards and vehicle fires from Austin and Travis County agencies.' },
+  { id: 'dallas', name: 'Dallas police active calls',     org: 'Dallas Police Department',  every: 120, run: fetchDallas, label: () => `${(S.items.get('dallas') || []).length} of ${S.dallasTotal || 0} calls placed`, gate: nearGate(32.7767, -96.797, 45, 'Only covers the City of Dallas'), url: 'https://www.dallasopendata.com/Public-Safety/Dallas-Police-Active-Calls/9fxf-t2tr', note: 'Every call officers are on. Published without coordinates, so only confident address matches are mapped.' },
   { id: 'nws',    name: 'Weather alerts',                 org: 'National Weather Service', every: 60,  run: fetchNWS,   url: 'https://www.weather.gov/', note: 'Every alert covering your exact point, plus warning polygons within 30 mi.' },
   { id: 'obs',    name: 'Wind and conditions',            org: 'Nearest NWS station',      every: 600, run: fetchObs, label: () => S.cond ? (S.cond.kind === 'model' ? 'model estimate' : 'station ' + S.cond.id) : '',   url: 'https://www.weather.gov/', note: 'Measured at the closest reporting station. Falls back to a model, and says so.' },
   { id: 'lsr',    name: 'Storm spotter reports',          org: 'NWS via Iowa Mesonet',     every: 300, run: fetchLSR,   url: 'https://mesonet.agron.iastate.edu/lsr/', note: 'Ground reports from spotters, officials and the public, last 24 hours.' },
   { id: 'viirs',  name: 'Satellite heat detections',      org: 'NASA VIIRS via Esri',      every: 600, run: fetchVIIRS, url: 'https://firms.modaps.eosdis.nasa.gov/map/', note: 'Flares, plant fires and burns seen from orbit, last 48 hours. A few passes a day.' },
-  { id: 'tceq',   name: 'Reported emission events',       org: 'Texas Commission on Environmental Quality', every: 1800, run: fetchTCEQ, gate: () => texasGate() || (S.relay ? null : 'Needs a relay. See Layers'), url: 'https://www2.tceq.texas.gov/oce/eer/', note: 'What plants themselves report: releases, flaring, upsets, for the past week. Often filed a day after the event.' },
+  { id: 'tceq',   name: 'Reported emission events',       org: 'Texas Commission on Environmental Quality', every: 1800, run: fetchTCEQ, relay: true, gate: () => texasGate() || (relayBase() ? null : 'Needs a relay. See Layers'), url: 'https://www2.tceq.texas.gov/oce/eer/', note: 'What plants themselves report: releases, flaring, upsets, for the past week. Often filed a day after the event.' },
   { id: 'air',    name: 'Air quality monitors',           org: 'EPA AirNow',               every: 900, run: fetchAir,   label: () => `${S.air.length} monitors, ${S.air.filter(m => m.aqi > 100).length} flagged`, url: 'https://www.airnow.gov/', note: 'Hourly ozone and particle readings. Flagged in the feed above AQI 100.' },
   { id: 'waze',   name: 'Road closures and jams',         org: 'Waze, published by TxDOT', every: 180, run: fetchWaze,  gate: texasGate, url: 'https://www.waze.com/live-map/', note: 'Driver-reported closures and standstill traffic.' },
   { id: 'gauges', name: 'River and bayou gauges',         org: 'NOAA water prediction',    every: 600, run: fetchGauges, label: () => `${S.gauges.length} gauges, ${S.gauges.filter(g => FLOOD[g.cat]).length} flagged`, url: 'https://water.noaa.gov/', note: 'Flagged in the feed at action stage or higher.' },
   { id: 'wfigs',  name: 'Wildland fires',                 org: 'National Interagency Fire Center', every: 900, run: fetchWFIGS, url: 'https://data-nifc.opendata.arcgis.com/', note: 'Wildfires and prescribed burns within 60 mi.' },
   { id: 'cams',   name: 'Roadside cameras',               org: 'Houston TranStar',         every: 21600, run: fetchCams, label: () => S.cams.length + ' cameras', gate: houstonGate, url: 'https://traffic.houstontranstar.org/', note: 'Live stills from the nearest freeway or arterial camera, shown inside an incident when one is within 0.75 mi. Cameras point where operators leave them.' },
-  { id: 'bsky',   name: 'Social chatter',                 org: 'Bluesky public search',    every: 240, run: fetchChatter, label: () => S.chatter.length + (S.chatter.length === 1 ? ' post' : ' posts'), url: 'https://bsky.app/', note: 'Unverified public posts naming your city. Shown only in the Chatter tab, never on the map.' },
+  { id: 'aircraft', name: 'Helicopters and emergency squawks', org: 'adsb.fi volunteer receivers', every: 45, run: fetchAircraft, relay: true, gate: relayGate, url: 'https://globe.adsb.fi/', note: 'Low helicopters, flagged when one holds over a spot for several minutes, and any aircraft declaring an emergency.' },
+  { id: 'news',   name: 'News headlines',                 org: 'GDELT news index',         every: 900, run: fetchNews, relay: true, soft: true, gate: relayGate, label: () => S.news.length + (S.news.length === 1 ? ' headline' : ' headlines'), url: 'https://www.gdeltproject.org/', note: 'Recent US news stories naming your city with an emergency word. Chatter tab only.' },
+  { id: 'bsky',   name: 'Social chatter',                 org: 'Bluesky public search',    every: 240, run: fetchChatter, soft: true, label: () => S.chatter.length + (S.chatter.length === 1 ? ' post' : ' posts'), url: 'https://bsky.app/', note: 'Unverified public posts naming your city. Shown only in the Chatter tab, never on the map.' },
   { id: 'quake',  name: 'Earthquakes',                    org: 'US Geological Survey',     every: 300, run: fetchQuakes, url: 'https://earthquake.usgs.gov/earthquakes/map/', note: 'Magnitude 2.5 and up within 250 mi.' },
 ];
 SOURCES.forEach(s => S.src[s.id] = { state: 'idle', at: 0, next: 0, count: 0, err: null, busy: false, loaded: false });
@@ -654,7 +746,7 @@ async function runSource(s) {
   } finally { st.busy = false; st.next = Date.now() + (st.state === 'ok' ? s.every : Math.min(s.every, 60)) * 1000; schedule(); }
 }
 function tick() { if (document.hidden) return; const now = Date.now(); SOURCES.forEach(s => { if (now >= S.src[s.id].next) runSource(s); }); }
-function refreshAll() { S.token++; S.origin = { lat: S.loc.lat, lon: S.loc.lon }; S.items.clear(); S.seen.clear(); S.air = []; S.gauges = []; S.jamLines = []; S.cams = []; S.chatter = []; S.cond = null; S.point = null; SOURCES.forEach(s => Object.assign(S.src[s.id], { state: 'idle', at: 0, next: 0, busy: false, loaded: false, err: null })); tick(); schedule(); }
+function refreshAll() { S.token++; S.origin = { lat: S.loc.lat, lon: S.loc.lon }; S.items.clear(); S.seen.clear(); S.air = []; S.gauges = []; S.jamLines = []; S.cams = []; S.chatter = []; S.news = []; S.cond = null; S.point = null; SOURCES.forEach(s => Object.assign(S.src[s.id], { state: 'idle', at: 0, next: 0, busy: false, loaded: false, err: null })); tick(); schedule(); }
 
 /* ============================================================ derived view */
 function allItems() {
@@ -674,8 +766,8 @@ let raf = 0; const schedule = () => { if (!raf) raf = requestAnimationFrame(() =
 function render() { const items = allItems(), feed = feedItems(items); renderHead(items, feed); renderChips(items); renderFeed(feed); renderChatter(); renderSources(); renderMap(items); }
 
 function renderHead(items, feed) {
-  const core = ['hec', 'nws'].filter(id => S.src[id].state !== 'off'), ready = SOURCES.filter(s => S.src[s.id].loaded).length, active = SOURCES.filter(s => S.src[s.id].state !== 'off');
-  const bad = active.filter(s => ['error', 'stale'].includes(S.src[s.id].state)), loading = core.some(id => !S.src[id].loaded && S.src[id].state !== 'error');
+  const core = ['hec', 'austin', 'dallas', 'nws'].filter(id => S.src[id].state !== 'off'), ready = SOURCES.filter(s => S.src[s.id].loaded).length, active = SOURCES.filter(s => S.src[s.id].state !== 'off');
+  const bad = active.filter(s => !s.soft && ['error', 'stale'].includes(S.src[s.id].state)), loading = core.some(id => !S.src[id].loaded && S.src[id].state !== 'error');
   const hl = $('#hl'), sub = $('#hl-sub'), box = $('#headline'), r = S.radius, mi = r === 1 ? 'mile' : 'miles';
   const top = feed.filter(i => i.sev >= 4), serious = feed.filter(i => i.sev === 3);
   let cls = '', h, s;
@@ -704,7 +796,7 @@ function renderHead(items, feed) {
   else if (S.src.air.loaded) { $('#c-air').textContent = 'No monitor'; $('#c-air-s').textContent = 'none reporting nearby'; }
   $('#loc-name').textContent = S.loc.label;
   $('#loc-sub').textContent = S.loc.src === 'default' ? 'Default. Tap to use your location' : S.loc.src === 'device' ? `Device location${S.loc.acc ? ', within ' + Math.round(S.loc.acc) + ' m' : ''}` : `${S.loc.lat.toFixed(4)}, ${S.loc.lon.toFixed(4)}`;
-  $('#feed-cnt').textContent = feed.length ? feed.length : ''; $('#chat-cnt').textContent = S.chatter.length ? S.chatter.length : ''; $('#src-cnt').textContent = `${active.filter(s => S.src[s.id].state === 'ok').length}/${active.length}`;
+  $('#feed-cnt').textContent = feed.length ? feed.length : ''; $('#chat-cnt').textContent = S.chatter.length + S.news.length ? S.chatter.length + S.news.length : ''; $('#src-cnt').textContent = `${active.filter(s => S.src[s.id].state === 'ok').length}/${active.length}`;
 }
 
 function renderChips(items) {
@@ -724,11 +816,12 @@ function renderFeed(feed) {
 function renderChatter() {
   if (S.tab !== 'chat') return;
   const st = S.src.bsky, place = esc(S.chatterCity || 'your area');
-  const head = `<div class="banner"><b>Unverified.</b> Public Bluesky posts from the last 6 hours that mention ${place} and an emergency word. Good as an early hint, wrong often enough that nothing here goes on the map. Confirm it in the Nearby tab.</div>`;
+  const head = `<div class="banner"><b>Unverified.</b> Public posts and news headlines from the last 6 hours that mention ${place} and an emergency word. Good as an early hint, wrong often enough that nothing here goes on the map. Confirm it in the Nearby tab.</div>`;
   const body = !st.loaded ? (st.state === 'error' ? `<div class="empty">Chatter is unavailable here: ${esc(st.err)}.</div>` : '<div class="skel"></div><div class="skel"></div>')
     : S.chatter.length ? S.chatter.map(p => `<a class="post" href="${esc(p.url)}" target="_blank" rel="noopener"><span class="who"><b>@${esc(p.handle)}</b><span>${esc(ago(p.t))}</span></span><p>${esc(p.text)}</p><span class="tag">${esc(p.term)}</span></a>`).join('')
     : `<div class="empty"><b>No chatter.</b>Nobody has posted about ${place} with an emergency word in the last 6 hours.</div>`;
-  const el = $('#chatter'), html = head + body; if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+  const news = S.news.length ? `<div class="note"><h3>Headlines · last 6 hours</h3></div>` + S.news.map(a => `<a class="post" href="${esc(a.url)}" target="_blank" rel="noopener"><span class="who"><b>${esc(a.domain)}</b><span>${esc(ago(a.t))}</span></span><p>${esc(a.title)}</p></a>`).join('') + `<div class="note"><h3>Posts</h3></div>` : '';
+  const el = $('#chatter'), html = head + news + body; if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
 }
 
 function renderSources() {
@@ -932,7 +1025,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) tick
 addEventListener('resize', () => map && map.resize());
 
 window.vigil = S;
-initMap();
+initMap(); probeRelay();
 tick(); setInterval(tick, 5000); setInterval(schedule, 20000);
 if (S.follow) setFollow(true);
 else if (S.loc.src === 'default' && navigator.permissions) navigator.permissions.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') useDevice(true); }).catch(() => {});
