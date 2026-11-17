@@ -91,8 +91,11 @@ a{color:inherit}
 .icon-btn svg{width:16px;height:16px}
 .icon-btn[aria-expanded=true]{background:var(--paper);color:var(--ink)}
 
-.chips{display:flex;gap:6px;padding:0 12px 10px;overflow-x:auto;scrollbar-width:none}
-.chips::-webkit-scrollbar{display:none}
+.chips{display:flex;flex:none;gap:6px;padding:0 12px 8px;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--line-2) transparent}
+.chips::-webkit-scrollbar{height:5px}
+.chips::-webkit-scrollbar-track{background:transparent}
+.chips::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:999px}
+.chips::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 .chip{flex:none;display:flex;align-items:center;gap:6px;padding:5px 9px 5px 7px;border:1px solid var(--line);border-radius:999px;font-size:12px;font-weight:500;color:var(--text);background:var(--ink-2)}
 .chip svg{width:13px;height:13px;color:var(--c)}
 .chip i{font:500 11px/1 var(--f-mono);font-style:normal;color:var(--muted)}
@@ -291,7 +294,7 @@ a{color:inherit}
   <label class="row"><span>Tone on serious new incidents<small>Only while this page is open</small></span><input class="sw" type="checkbox" id="l-chime"></label>
   <h2 style="margin-top:16px">Relay</h2>
   <p class="hint" style="margin-top:0" id="relay-hint">Some feeds refuse browsers and need a go-between. A relay beside this page is found automatically. Otherwise paste its address.</p>
-  <form class="field" id="relay-form"><input id="relay-q" placeholder="https://your-relay.workers.dev" autocomplete="off" aria-label="Relay address"><button class="btn" type="submit">Save</button></form>
+  <form class="field" id="relay-form"><input id="relay-q" placeholder="vigil.texmexdex11.workers.dev" autocomplete="off" aria-label="Relay address"><button class="btn" type="submit">Save</button></form>
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
