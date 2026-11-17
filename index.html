@@ -102,7 +102,7 @@ a{color:inherit}
 .chip[aria-pressed=false]{opacity:.42}
 .chip[aria-pressed=false] svg{color:var(--faint)}
 
-.tabs{display:flex;gap:18px;padding:0 16px;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:16px;padding:0 16px;overflow-x:auto;scrollbar-width:none;border-bottom:1px solid var(--line)}
 .tabs button{padding:8px 0 9px;font:600 11px/1 var(--f-ui);letter-spacing:.09em;text-transform:uppercase;color:var(--faint);border-bottom:2px solid transparent;margin-bottom:-1px}
 .tabs button[aria-selected=true]{color:var(--paper);border-color:var(--paper)}
 .tabs .cnt{font-family:var(--f-mono);font-weight:500;margin-left:4px;color:var(--muted)}
@@ -147,6 +147,20 @@ a{color:inherit}
 .post .tag{display:inline-block;margin-top:7px}
 .banner{margin:12px 16px 4px;padding:10px 12px;border:1px dashed var(--line-2);border-radius:10px;color:var(--muted);font-size:12px;line-height:1.45}
 .banner b{color:var(--paper);font-weight:600}
+.flight{display:grid;grid-template-columns:1fr auto;gap:2px 10px;width:100%;padding:10px 16px;text-align:left;border-bottom:1px solid rgba(34,48,60,.7)}
+.flight:hover,.flight.sel{background:rgba(255,255,255,.035)}
+.flight b{font-weight:600;font-size:13.5px;color:var(--paper)}
+.flight .when{font:500 11px/1.4 var(--f-mono);color:var(--muted);text-align:right}
+.flight .sub{grid-column:1/-1;font-size:12px;color:var(--text)}
+.flight .meta{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:5px 8px;margin-top:3px;font:500 11px/1 var(--f-mono);color:var(--muted)}
+.tag.mil{border-color:#c8b26a;color:#e6d38f}
+.acx{margin-top:10px}
+.acx img{display:block;width:100%;aspect-ratio:3/2;object-fit:cover;border-radius:8px;border:1px solid var(--line-2);background:var(--ink)}
+.acx .cred{margin-top:4px;font:500 10px/1.4 var(--f-mono);color:var(--muted)}
+.acx .cred a,.acx .wk a{color:var(--text)}
+.acx .ty{margin-top:9px;font:400 19px/1.15 var(--f-display);color:var(--paper)}
+.acx .wk{margin-top:5px;font-size:12px;line-height:1.5;color:var(--text);max-height:150px;overflow:auto}
+.acx .muted{color:var(--muted);font-size:12px}
 .note{padding:14px 16px 4px;color:var(--muted);font-size:12px;line-height:1.5}
 .note h3{margin:0 0 6px;font:600 11px/1 var(--f-ui);letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
 .note a{color:var(--text)}
@@ -264,11 +278,13 @@ a{color:inherit}
   <div class="tabs" role="tablist">
     <button role="tab" id="tab-feed" aria-selected="true">Nearby<span class="cnt" id="feed-cnt"></span></button>
     <button role="tab" id="tab-chat" aria-selected="false">Chatter<span class="cnt" id="chat-cnt"></span></button>
+    <button role="tab" id="tab-fly" aria-selected="false">Flights<span class="cnt" id="fly-cnt"></span></button>
     <button role="tab" id="tab-src" aria-selected="false">Sources<span class="cnt" id="src-cnt"></span></button>
   </div>
   <div class="scroll" id="scroll">
     <div class="feed" id="feed"><div class="skel"></div><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
     <div class="chatter" id="chatter" hidden></div>
+    <div class="flights" id="flights" hidden></div>
     <div class="sources" id="sources" hidden></div>
   </div>
 </section>
@@ -385,7 +401,7 @@ const S = {
   radius: RADII.includes(saved.radius) ? saved.radius : 5,
   cats: Object.assign(Object.fromEntries(Object.keys(CATS).map(k => [k, true])), saved.cats || {}),
   layers: Object.assign({ radar: true, wind: true, jams: true, air: true, gauges: true, cams: false }, saved.layers || {}),
-  chime: !!saved.chime, relay: saved.relay || '', follow: !!saved.follow, chatter: [], news: [], chatterCity: '', origin: null, autoRelay: '',
+  chime: !!saved.chime, relay: saved.relay || '', follow: !!saved.follow, chatter: [], news: [], flights: [], flightSel: null, chatterCity: '', origin: null, autoRelay: '',
   items: new Map(), src: {}, seen: new Map(), token: 0,
   wind: null, cond: null, air: [], gauges: [], jamLines: [], cams: [], nearestAir: null,
   selected: null, tab: 'feed', point: null,
@@ -664,7 +680,7 @@ async function fetchAircraft() {
     const hist = (acTrack.get(a.hex) || []).filter(p => now - p.t < 10 * 6e4); hist.push({ t: now, lat: a.lat, lon: a.lon }); acTrack.set(a.hex, hist);
     const holding = hist.length >= 3 && now - hist[0].t >= 150e3 && hist.every(p => distMi(p.lat, p.lon, a.lat, a.lon) < 1.2);
     const op = (a.ownOp || '').trim(), role = roleOf(op), call = (a.flight || '').trim(), mph = a.gs != null ? Math.round(a.gs * 1.151) : null;
-    out.push({ id: 'ac-' + a.hex, cat: 'aircraft', sev: emerg ? 3 : holding ? 2 : 1, title: emerg ? `Aircraft squawking ${a.squawk || 'emergency'}: ${emerg}` : holding ? 'Helicopter holding over one spot' : 'Helicopter low overhead',
+    out.push({ acType: a.t, id: 'ac-' + a.hex, cat: 'aircraft', sev: emerg ? 3 : holding ? 2 : 1, title: emerg ? `Aircraft squawking ${a.squawk || 'emergency'}: ${emerg}` : holding ? 'Helicopter holding over one spot' : 'Helicopter low overhead',
       sub: [op ? titleCase(op) : 'Operator not listed', a.t, a.r].filter(Boolean).join(' · '), lat: a.lat, lon: a.lon, t: holding ? hist[0].t : now, url: `https://globe.adsb.fi/?icao=${encodeURIComponent(a.hex)}`,
       facts: [['Callsign', call || 'none'], ['Altitude', alt != null ? alt.toLocaleString() + ' ft' : String(a.alt_baro || 'unknown')], ['Speed', mph != null ? mph + ' mph' : 'unknown'], ['Heading', a.track != null ? compass(a.track) : 'unknown'], ['Registered to', op ? titleCase(op) : 'not listed']],
       long: emerg ? '' : 'Seen by volunteer ADS-B receivers. Aircraft with transponders off, including some police and military flights, do not appear.', pin: true, tags: [role, holding ? Math.round((now - hist[0].t) / 6e4) + ' min on station' : ''].filter(Boolean), srcTag: S.acSource || 'ADS-B' });
@@ -737,6 +753,60 @@ async function fetchDallas() {
 }
 const nearGate = (lat, lon, mi, text) => () => distMi(S.loc.lat, S.loc.lon, lat, lon) > mi ? text : null;
 
+/* ----- aircraft identity: photo of the exact airframe, make and model, and what the type is ----- */
+const TYPE_NAMES = { H47: 'Boeing CH-47 Chinook', H60: 'Sikorsky UH-60 Black Hawk', S70: 'Sikorsky S-70', H64: 'Boeing AH-64 Apache', V22: 'Bell Boeing V-22 Osprey', H53: 'Sikorsky CH-53E Super Stallion', H53S: 'Sikorsky CH-53K King Stallion', UH1: 'Bell UH-1 Iroquois', UH1Y: 'Bell UH-1Y Venom', AH1: 'Bell AH-1 Cobra', H72: 'Eurocopter UH-72 Lakota', LAMA: 'Aérospatiale SA 315B Lama',
+  AS50: 'Eurocopter AS350 Écureuil', AS55: 'Eurocopter AS355 Écureuil 2', EC20: 'Eurocopter EC120 Colibri', EC30: 'Eurocopter EC130', EC35: 'Eurocopter EC135', EC45: 'Eurocopter EC145', BK17: 'MBB/Kawasaki BK 117', EC55: 'Eurocopter EC155', EC75: 'Airbus Helicopters H175', H160: 'Airbus Helicopters H160',
+  B06: 'Bell 206', B06T: 'Bell 206L TwinRanger', B407: 'Bell 407', B412: 'Bell 412', B429: 'Bell 429 GlobalRanger', B505: 'Bell 505 Jet Ranger X', B212: 'Bell 212', B222: 'Bell 222', B230: 'Bell 230', B430: 'Bell 430', B525: 'Bell 525 Relentless',
+  A109: 'AgustaWestland AW109', A119: 'AgustaWestland AW119 Koala', A139: 'AgustaWestland AW139', A169: 'AgustaWestland AW169', A189: 'AgustaWestland AW189', S76: 'Sikorsky S-76', S92: 'Sikorsky S-92', R22: 'Robinson R22', R44: 'Robinson R44', R66: 'Robinson R66', MD52: 'MD Helicopters MD 500', MD60: 'MD Helicopters MD 600N', EXPL: 'MD Helicopters MD Explorer', EN28: 'Enstrom F-28', EN48: 'Enstrom 480',
+  C130: 'Lockheed C-130 Hercules', C30J: 'Lockheed Martin C-130J Super Hercules', C17: 'Boeing C-17 Globemaster III', C5M: 'Lockheed C-5 Galaxy', K35R: 'Boeing KC-135 Stratotanker', KC46: 'Boeing KC-46 Pegasus', E3TF: 'Boeing E-3 Sentry', P8: 'Boeing P-8 Poseidon', T38: 'Northrop T-38 Talon', T6: 'Beechcraft T-6 Texan II', F16: 'General Dynamics F-16 Fighting Falcon', F18S: 'Boeing F/A-18E/F Super Hornet', F35: 'Lockheed Martin F-35 Lightning II', B52: 'Boeing B-52 Stratofortress', B1: 'Rockwell B-1 Lancer', C12: 'Beechcraft C-12 Huron', C560: 'Cessna Citation V' };
+const acCache = new Map();
+async function acIdentity(hex, t) {
+  if (acCache.has(hex)) return acCache.get(hex);
+  const job = (async () => {
+    const [ps, hx] = await Promise.all([
+      get(`https://api.planespotters.net/pub/photos/hex/${encodeURIComponent(hex)}`, { timeout: 12000 }).catch(() => null),
+      get(`https://hexdb.io/api/v1/aircraft/${encodeURIComponent(hex)}`, { timeout: 12000 }).catch(() => null)]);
+    const photo = ps && ps.photos && ps.photos[0];
+    const typeName = TYPE_NAMES[(t || hx?.ICAOTypeCode || '').toUpperCase()] || (hx && hx.Manufacturer && hx.Type ? `${hx.Manufacturer} ${hx.Type}` : '');
+    let wiki = null;
+    if (typeName) {
+      try {
+        let title = TYPE_NAMES[(t || '').toUpperCase()] || '';
+        if (!title) { const s = await get(`https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=1&format=json&origin=*&srsearch=${encodeURIComponent(typeName + ' aircraft')}`, { timeout: 10000 }); title = s?.query?.search?.[0]?.title || ''; }
+        if (title) { const w = await get(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`, { timeout: 10000 }); if (w && w.extract) wiki = { title: w.title, text: w.extract, url: w.content_urls?.desktop?.page }; }
+      } catch {}
+    }
+    return { photo: photo ? { src: photo.thumbnail_large?.src || photo.thumbnail?.src, by: photo.photographer, link: photo.link } : null, typeName, reg: hx?.Registration, owner: hx?.RegisteredOwners, wiki };
+  })();
+  acCache.set(hex, job); return job;
+}
+const acSlot = (hex, t) => `<div class="acx" data-hex="${esc(hex)}" data-t="${esc(t || '')}"><p class="muted">Looking up this aircraft…</p></div>`;
+async function fillAircraft(root) {
+  const el = root && root.querySelector('.acx[data-hex]'); if (!el) return;
+  const id = await acIdentity(el.dataset.hex, el.dataset.t); if (!el.isConnected) return;
+  el.innerHTML = (id.photo ? `<img src="${esc(id.photo.src)}" alt="Photo of this aircraft"><div class="cred">Photo © ${esc(id.photo.by || 'photographer')} · <a href="${esc(id.photo.link)}" target="_blank" rel="noopener">Planespotters.net</a></div>` : '<p class="muted">No photo of this exact airframe on Planespotters.</p>')
+    + (id.typeName ? `<div class="ty">${esc(id.typeName)}</div>` : '')
+    + (id.reg || id.owner ? `<p class="muted" style="margin-top:3px">${esc([id.reg, id.owner].filter(Boolean).join(' · '))}</p>` : '')
+    + (id.wiki ? `<div class="wk">${esc(id.wiki.text)} <a href="${esc(id.wiki.url)}" target="_blank" rel="noopener">Full specs on Wikipedia</a></div>` : '');
+}
+
+/* ----- flights recorded by the home PC (serve.py) while the app was closed ----- */
+const historyURL = () => relayBase().replace(/\/relay$/, '') + '/history';
+function trackStats(pts) { // closest approach to you, and when
+  let best = Infinity, at = pts[0];
+  for (const p of pts) { const d = distMi(S.loc.lat, S.loc.lon, p[1], p[2]); if (d < best) { best = d; at = p; } }
+  return { d: best, at };
+}
+async function fetchFlights() {
+  const j = await get(`${historyURL()}?since=${Math.floor(Date.now() / 1000 - 24 * 3600)}`, { timeout: 20000 });
+  if (!j || !Array.isArray(j.aircraft)) throw new Error('no recorder answering');
+  S.recorder = { center: j.center, nm: j.radius_nm };
+  S.flights = j.aircraft.map(a => { const st = trackStats(a.pts), last = a.pts[a.pts.length - 1]; return { ...a, closest: st.d, closestAt: st.at, first: a.pts[0][0] * 1000, last: last[0] * 1000, live: Date.now() - last[0] * 1000 < 90e3 }; })
+    .sort((x, y) => y.last - x.last);
+  return [];
+}
+const flightName = f => TYPE_NAMES[(f.meta.t || '').toUpperCase()] || f.meta.t || 'Unknown type';
+
 const relayGate = () => relayBase() ? null : 'Needs a relay. See Layers';
 const houstonGate = () => distMi(S.loc.lat, S.loc.lon, 29.7604, -95.3698) > 70 ? 'Only covers the City of Houston' : null;
 const texasGate = () => inTexas() ? null : 'Only covers Texas';
@@ -755,6 +825,7 @@ const SOURCES = [
   { id: 'wfigs',  name: 'Wildland fires',                 org: 'National Interagency Fire Center', every: 900, run: fetchWFIGS, url: 'https://data-nifc.opendata.arcgis.com/', note: 'Wildfires and prescribed burns within 60 mi.' },
   { id: 'cams',   name: 'Roadside cameras',               org: 'Houston TranStar',         every: 21600, run: fetchCams, label: () => S.cams.length + ' cameras', gate: houstonGate, url: 'https://traffic.houstontranstar.org/', note: 'Live stills from the nearest freeway or arterial camera, shown inside an incident when one is within 0.75 mi. Cameras point where operators leave them.' },
   { id: 'aircraft', name: 'Helicopters and emergency squawks', org: 'Volunteer ADS-B receivers (adsb.fi, adsb.lol, OpenSky)', every: 45, run: fetchAircraft, relay: true, gate: relayGate, label: () => `${(S.items.get('aircraft') || []).length} flagged · via ${S.acSource || '…'}`, url: 'https://globe.adsb.fi/', note: 'Low helicopters, flagged when one holds over a spot for several minutes, and any aircraft declaring an emergency.' },
+  { id: 'flights', name: 'Flight recorder',            org: 'Your PC, logging adsb.fi',  every: 60, run: fetchFlights, relay: true, soft: true, gate: relayGate, label: () => `${S.flights.length} aircraft in 24 h`, url: 'https://globe.adsb.fi/', note: 'Your PC records every helicopter, military aircraft and emergency squawk around Houston, all day. Shown in the Flights tab.' },
   { id: 'news',   name: 'News headlines',                 org: 'GDELT, then Google News',         every: 900, run: fetchNews, relay: true, soft: true, gate: relayGate, label: () => S.news.length + (S.news.length === 1 ? ' headline' : ' headlines') + (S.newsSource ? ' · via ' + S.newsSource : ''), url: 'https://www.gdeltproject.org/', note: 'Recent US news stories naming your city with an emergency word. Chatter tab only.' },
   { id: 'bsky',   name: 'Social chatter',                 org: 'Bluesky public search',    every: 240, run: fetchChatter, soft: true, label: () => S.chatter.length + (S.chatter.length === 1 ? ' post' : ' posts'), url: 'https://bsky.app/', note: 'Unverified public posts naming your city. Shown only in the Chatter tab, never on the map.' },
   { id: 'quake',  name: 'Earthquakes',                    org: 'US Geological Survey',     every: 300, run: fetchQuakes, url: 'https://earthquake.usgs.gov/earthquakes/map/', note: 'Magnitude 2.5 and up within 250 mi.' },
@@ -797,7 +868,7 @@ const feedItems = items => items.filter(i => S.cats[i.cat] && i.feed !== false &
 const distLabel = i => i.atPoint ? 'at your location' : i.noDist ? 'county level' : i.dist < 0.1 ? 'right here' : `${i.dist < 10 ? i.dist.toFixed(1) : Math.round(i.dist)} mi ${compass(i.brg)}`;
 
 let raf = 0; const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); };
-function render() { const items = allItems(), feed = feedItems(items); renderHead(items, feed); renderChips(items); renderFeed(feed); renderChatter(); renderSources(); renderMap(items); }
+function render() { const items = allItems(), feed = feedItems(items); renderHead(items, feed); renderChips(items); renderFeed(feed); renderChatter(); renderFlights(); renderSources(); renderMap(items); }
 
 function renderHead(items, feed) {
   const core = ['hec', 'austin', 'dallas', 'nws'].filter(id => S.src[id].state !== 'off'), ready = SOURCES.filter(s => S.src[s.id].loaded).length, active = SOURCES.filter(s => S.src[s.id].state !== 'off');
@@ -830,7 +901,8 @@ function renderHead(items, feed) {
   else if (S.src.air.loaded) { $('#c-air').textContent = 'No monitor'; $('#c-air-s').textContent = 'none reporting nearby'; }
   $('#loc-name').textContent = S.loc.label;
   $('#loc-sub').textContent = S.loc.src === 'default' ? 'Default. Tap to use your location' : S.loc.src === 'device' ? `Device location${S.loc.acc ? ', within ' + Math.round(S.loc.acc) + ' m' : ''}` : `${S.loc.lat.toFixed(4)}, ${S.loc.lon.toFixed(4)}`;
-  $('#feed-cnt').textContent = feed.length ? feed.length : ''; $('#chat-cnt').textContent = S.chatter.length + S.news.length ? S.chatter.length + S.news.length : ''; $('#src-cnt').textContent = `${active.filter(s => S.src[s.id].state === 'ok').length}/${active.length}`;
+  $('#feed-cnt').textContent = feed.length ? feed.length : ''; $('#chat-cnt').textContent = S.chatter.length + S.news.length ? S.chatter.length + S.news.length : '';
+  { const n = S.flights.filter(f => f.closest <= Math.max(S.radius * 2, 10)).length; $('#fly-cnt').textContent = n || ''; } $('#src-cnt').textContent = `${active.filter(s => S.src[s.id].state === 'ok').length}/${active.length}`;
 }
 
 function renderChips(items) {
@@ -856,6 +928,32 @@ function renderChatter() {
     : `<div class="empty"><b>No chatter.</b>Nobody has posted about ${place} with an emergency word in the last 6 hours.</div>`;
   const news = S.news.length ? `<div class="note"><h3>Headlines · last 6 hours</h3></div>` + S.news.map(a => `<a class="post" href="${esc(a.url)}" target="_blank" rel="noopener"><span class="who"><b>${esc(a.domain)}</b><span>${esc(ago(a.t))}</span></span><p>${esc(a.title)}</p></a>`).join('') + `<div class="note"><h3>Posts</h3></div>` : '';
   const el = $('#chatter'), html = head + news + body; if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+}
+
+function renderFlights() {
+  if (S.tab !== 'fly') return;
+  const st = S.src.flights, near = Math.max(S.radius * 2, 10);
+  const list = S.flights.filter(f => f.closest <= near);
+  const head = `<div class="banner">Helicopters, military aircraft and emergency squawks your PC logged in the last 24 hours that came within <b>${near} mi</b> of your position. Tap one for its path, photo and specs.</div>`;
+  const body = !st.loaded ? (st.state === 'error' || st.state === 'off' ? `<div class="empty">The flight recorder is not answering${st.err ? ': ' + esc(st.err) : ''}. It runs on your PC with the home relay.</div>` : '<div class="skel"></div><div class="skel"></div>')
+    : list.length ? list.map(f => { const m = f.meta, alt = f.closestAt[3];
+      return `<button class="flight${S.flightSel === f.hex ? ' sel' : ''}" data-hex="${esc(f.hex)}"><b>${esc(flightName(f))}</b><span class="when">${f.live ? 'overhead now' : esc(ago(f.last)) + ' ago'}</span><span class="sub">${esc([m.r, m.ownOp ? titleCase(m.ownOp) : '', m.flight && m.flight !== m.r ? m.flight : ''].filter(Boolean).join(' · ') || 'No registration broadcast')}</span><span class="meta"><span class="dist">closest ${f.closest < 10 ? f.closest.toFixed(1) : Math.round(f.closest)} mi at ${esc(fmtClock(f.closestAt[0] * 1000))}</span>${alt != null ? `<span>${Number(alt).toLocaleString()} ft</span>` : ''}${m.mil ? '<span class="tag mil">military</span>' : ''}${m.heli ? '<span class="tag">helicopter</span>' : ''}${m.emerg ? `<span class="tag up">squawk ${esc(m.emerg)}</span>` : ''}</span></button>`; }).join('')
+    : `<div class="empty"><b>Nothing logged near you.</b>${S.flights.length} aircraft were recorded around Houston in 24 hours, none within ${near} mi of this position.</div>`;
+  const el = $('#flights'), html = head + body; if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+}
+function showFlight(hex) {
+  const f = S.flights.find(x => x.hex === hex); if (!f || !map || !mapReady) return;
+  S.flightSel = hex;
+  const line = f.pts.map(p => [p[2], p[1]]);
+  map.getSource('trk').setData(fc([{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: line.length > 1 ? line : [line[0], line[0]] } }, { type: 'Feature', properties: { end: 1 }, geometry: { type: 'Point', coordinates: line[line.length - 1] } }]));
+  let b = [180, 90, -180, -90]; line.forEach(([x, y]) => { b = [Math.min(b[0], x), Math.min(b[1], y), Math.max(b[2], x), Math.max(b[3], y)]; });
+  if (isPhone()) setSheet('peek');
+  const pad = mapPadding(isPhone() ? 176 : 0); pad.top += Math.min(430, innerHeight * 0.5); // room for the card above the path
+  map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: pad, duration: 900, maxZoom: 13 });
+  const m = f.meta, c = f.closestAt;
+  const facts = [['Registration', m.r || ''], ['Callsign', m.flight || ''], ['Owner', m.ownOp ? titleCase(m.ownOp) : ''], ['Seen', `${fmtWhen(f.first)} to ${f.live ? 'now' : fmtWhen(f.last)}`], ['Closest to you', `${f.closest.toFixed(1)} mi at ${fmtClock(c[0] * 1000)}`], ['Altitude then', c[3] != null ? Number(c[3]).toLocaleString() + ' ft' : 'unknown'], ['Speed then', c[4] != null ? Math.round(c[4] * 1.151) + ' mph' : 'unknown']].filter(x => x[1]).map(x => `<dt>${esc(x[0])}</dt><dd>${esc(x[1])}</dd>`).join('');
+  showPopup([c[2], c[1]], `<div class="pp" style="--c:${CATS.aircraft.color}"><div class="k">${m.mil ? 'Military · ' : ''}${m.heli ? 'Helicopter' : 'Aircraft'} · ${f.live ? 'overhead now' : esc(ago(f.last)) + ' ago'}</div><h3>${esc(flightName(f))}</h3><dl>${facts}</dl>${acSlot(f.hex, m.t)}<div class="foot">Recorded by your PC · <a href="https://globe.adsb.fi/?icao=${esc(f.hex)}" target="_blank" rel="noopener">replay on adsb.fi</a></div></div>`);
+  schedule();
 }
 
 function renderSources() {
@@ -905,7 +1003,7 @@ function setupLayers() {
   const vis = on => on ? 'visible' : 'none', src = id => map.addSource(id, { type: 'geojson', data: EMPTY });
   map.addSource('radar', { type: 'raster', tiles: radarTiles(), tileSize: 256, attribution: 'Radar NOAA NEXRAD via IEM' });
   map.addLayer({ id: 'radar', type: 'raster', source: 'radar', layout: { visibility: vis(S.layers.radar) }, paint: { 'raster-opacity': 0.5, 'raster-fade-duration': 0 } }, firstSymbol);
-  ['wx', 'wedge', 'rings', 'jams', 'cams', 'gauges', 'air', 'inc', 'sel'].forEach(src);
+  ['wx', 'wedge', 'rings', 'jams', 'cams', 'gauges', 'air', 'trk', 'inc', 'sel'].forEach(src);
   const sevCol = ['match', ['get', 'sev'], 4, SEV_COLOR[4], 3, SEV_COLOR[3], 2, SEV_COLOR[2], SEV_COLOR[1]];
   map.addLayer({ id: 'wx-fill', type: 'fill', source: 'wx', paint: { 'fill-color': sevCol, 'fill-opacity': ['case', ['get', 'here'], 0.07, 0.13] } }, firstSymbol);
   map.addLayer({ id: 'wx-line', type: 'line', source: 'wx', paint: { 'line-color': sevCol, 'line-width': 1.4, 'line-opacity': 0.85 } }, firstSymbol);
@@ -918,6 +1016,9 @@ function setupLayers() {
   map.addLayer({ id: 'cams', type: 'circle', source: 'cams', layout: { visibility: vis(S.layers.cams) }, paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 2, 13, 4.5], 'circle-color': '#0a0f14', 'circle-stroke-color': '#f3efe6', 'circle-stroke-width': 1.2, 'circle-stroke-opacity': 0.75 } });
   map.addLayer({ id: 'gauges', type: 'circle', source: 'gauges', layout: { visibility: vis(S.layers.gauges) }, paint: { 'circle-radius': ['case', ['get', 'flag'], 6, 3.2], 'circle-color': ['get', 'color'], 'circle-opacity': ['case', ['get', 'flag'], 1, 0.55], 'circle-stroke-color': '#0a0f14', 'circle-stroke-width': 1.2 } });
   map.addLayer({ id: 'air', type: 'circle', source: 'air', layout: { visibility: vis(S.layers.air) }, paint: { 'circle-radius': 4.5, 'circle-color': ['get', 'color'], 'circle-stroke-color': '#0a0f14', 'circle-stroke-width': 1.6, 'circle-opacity': 0.9 } });
+  map.addLayer({ id: 'trk-glow', type: 'line', source: 'trk', filter: ['==', ['geometry-type'], 'LineString'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#cdd6e0', 'line-width': 7, 'line-opacity': 0.12, 'line-blur': 3 } });
+  map.addLayer({ id: 'trk', type: 'line', source: 'trk', filter: ['==', ['geometry-type'], 'LineString'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#e9eef3', 'line-width': 2, 'line-dasharray': [2, 1.4] } });
+  map.addLayer({ id: 'trk-end', type: 'circle', source: 'trk', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 5, 'circle-color': '#e9eef3', 'circle-stroke-color': '#0a0f14', 'circle-stroke-width': 2 } });
   const inR = ['get', 'inRange'];
   map.addLayer({ id: 'inc-glow', type: 'circle', source: 'inc', filter: ['>=', ['get', 'sev'], 2], paint: { 'circle-radius': ['match', ['get', 'sev'], 4, 34, 3, 26, 17], 'circle-color': ['get', 'color'], 'circle-blur': 0.9, 'circle-opacity': ['case', inR, 0.3, 0.08] } });
   map.addLayer({ id: 'inc-pulse', type: 'circle', source: 'inc', filter: ['all', inR, ['any', ['>=', ['get', 'sev'], 3], ['get', 'isNew']]], paint: { 'circle-radius': 14, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': 1.6, 'circle-stroke-opacity': 0.6 } });
@@ -969,15 +1070,16 @@ function renderMap(items) {
 
 function popupHTML(i) {
   const c = CATS[i.cat], facts = (i.facts || []).filter(f => f[1] !== '' && f[1] != null).map(f => `<dt>${esc(f[0])}</dt><dd>${esc(f[1])}</dd>`).join('');
-  return `<div class="pp" style="--c:${c.color}"><div class="k">${c.label} · ${esc(distLabel(i))}${i.upwind ? ' · upwind of you' : ''}</div><h3>${esc(i.title)}</h3><p>${esc(i.sub)}</p>${facts ? `<dl>${facts}</dl>` : ''}${i.long ? `<div class="long">${esc(i.long)}</div>` : ''}${(() => { const c = i.pin && !i.noDist ? nearestCam(i.lat, i.lon) : null; return c ? camHTML(c, `Nearest camera, ${c.d < 0.1 ? 'on the spot' : c.d.toFixed(1) + ' mi ' + compass(c.brg) + ' of this'}: `) : ''; })()}<div class="foot">${esc(i.srcTag || '')} · ${i.t ? esc(ago(i.t) === 'now' ? 'just now' : ago(i.t) + ' ago') + ' · ' : ''}<a href="${esc(i.url)}" target="_blank" rel="noopener">open source</a></div></div>`;
+  return `<div class="pp" style="--c:${c.color}"><div class="k">${c.label} · ${esc(distLabel(i))}${i.upwind ? ' · upwind of you' : ''}</div><h3>${esc(i.title)}</h3><p>${esc(i.sub)}</p>${facts ? `<dl>${facts}</dl>` : ''}${i.long ? `<div class="long">${esc(i.long)}</div>` : ''}${i.cat === 'aircraft' ? acSlot(i.id.slice(3), (i.facts.find(f => f[0] === 'Type') || [])[1] || i.acType) : ''}${(() => { const c = i.pin && !i.noDist ? nearestCam(i.lat, i.lon) : null; return c ? camHTML(c, `Nearest camera, ${c.d < 0.1 ? 'on the spot' : c.d.toFixed(1) + ' mi ' + compass(c.brg) + ' of this'}: `) : ''; })()}<div class="foot">${esc(i.srcTag || '')} · ${i.t ? esc(ago(i.t) === 'now' ? 'just now' : ago(i.t) + ' ago') + ' · ' : ''}<a href="${esc(i.url)}" target="_blank" rel="noopener">open source</a></div></div>`;
 }
 let camTimer = 0;
 function showPopup(lngLat, html) {
   if (!map) return; if (popup) popup.remove();
   const mine = popup = new maplibregl.Popup({ offset: 20, maxWidth: '320px', focusAfterOpen: false, anchor: 'bottom' }).setLngLat(lngLat).setHTML(html).addTo(map);
+  fillAircraft(mine.getElement());
   const img = mine.getElement().querySelector('.cam img');
   if (img) { img.onerror = () => img.closest('.cam').remove(); clearInterval(camTimer); camTimer = setInterval(() => { if (!img.isConnected) return clearInterval(camTimer); if (!document.hidden) img.src = camShot(img.dataset.cam); }, 15000); }
-  mine.on('close', () => { if (popup === mine) { popup = null; if (S.selected) { S.selected = null; schedule(); } } });
+  mine.on('close', () => { if (popup === mine) { popup = null; if (S.flightSel) { S.flightSel = null; map.getSource('trk')?.setData(EMPTY); } if (S.selected) { S.selected = null; schedule(); } } });
 }
 function select(id, zoomIn = true, at) {
   const i = allItems().find(x => x.id === id); if (!i) return;
@@ -1034,13 +1136,14 @@ let audio; function chimeFor(items) { const hit = items.find(i => i.sev >= 3 && 
 function closePops() { document.querySelectorAll('.pop').forEach(p => p.classList.remove('open')); $('#loc-btn').setAttribute('aria-expanded', 'false'); $('#layers-btn').setAttribute('aria-expanded', 'false'); }
 function togglePop(id, btn) { const p = $(id), open = !p.classList.contains('open'); closePops(); if (open) { p.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); } }
 function setSheet(s) { document.body.dataset.sheet = s; setTimeout(() => map && map.resize(), 320); }
-function setTab(t) { S.tab = t; [['feed', '#feed'], ['chat', '#chatter'], ['src', '#sources']].forEach(([k, sel]) => { $('#tab-' + k).setAttribute('aria-selected', t === k); $(sel).hidden = t !== k; }); $('#scroll').scrollTop = 0; schedule(); }
+function setTab(t) { S.tab = t; [['feed', '#feed'], ['chat', '#chatter'], ['fly', '#flights'], ['src', '#sources']].forEach(([k, sel]) => { $('#tab-' + k).setAttribute('aria-selected', t === k); $(sel).hidden = t !== k; }); $('#scroll').scrollTop = 0; schedule(); }
 
 $('#radius').innerHTML = RADII.map(r => `<button data-r="${r}" aria-pressed="${r === S.radius}">${r}</button>`).join('') + '<span class="unit">mi</span>';
 $('#radius').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.radius = +b.dataset.r; persist(); $('#radius').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b)); fitToRadius(true); schedule(); });
 $('#chips').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; S.cats[b.dataset.cat] = !S.cats[b.dataset.cat]; persist(); schedule(); });
 $('#feed').addEventListener('click', e => { const b = e.target.closest('.card'); if (b) select(b.dataset.id, true); });
-$('#tab-feed').onclick = () => setTab('feed'); $('#tab-chat').onclick = () => setTab('chat'); $('#tab-src').onclick = () => setTab('src');
+$('#flights').addEventListener('click', e => { const b = e.target.closest('.flight'); if (b) showFlight(b.dataset.hex); });
+$('#tab-feed').onclick = () => setTab('feed'); $('#tab-chat').onclick = () => setTab('chat'); $('#tab-fly').onclick = () => setTab('fly'); $('#tab-src').onclick = () => setTab('src');
 $('#loc-btn').onclick = e => togglePop('#loc-pop', e.currentTarget);
 $('#layers-btn').onclick = e => togglePop('#layers-pop', e.currentTarget);
 $('#geo-btn').onclick = () => useDevice(false);

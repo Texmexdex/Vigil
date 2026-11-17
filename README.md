@@ -21,6 +21,17 @@ key in `.relay-key`. That key is never committed. If the PC is off, only the hel
 
 The GitHub Pages copy of `index.html` uses the same Worker relay.
 
+## Flight recorder
+
+While the home relay runs, `serve.py` also logs every helicopter, military aircraft and emergency
+squawk within 40 nm of downtown Houston, every 15 seconds, and keeps 48 hours of tracks in
+`aircraft-history.json`. The app's **Flights** tab reads it through the Worker's `/history` route
+and shows each one's path, closest approach, a photo of the exact airframe (Planespotters.net),
+make, model and owner (hexdb.io), and a summary of the type (Wikipedia).
+
+Change the area or how long it keeps tracks in `vigil-config.json`, then restart the
+**Vigil home relay** task.
+
 ## Updating the Worker
 
     npx wrangler deploy
