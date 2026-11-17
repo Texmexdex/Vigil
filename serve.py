@@ -18,7 +18,10 @@ import urllib.request
 ALLOWED = {
     "www2.tceq.texas.gov",      # reported air emission events
     "opendata.adsb.fi",         # aircraft positions
+    "api.adsb.lol",             # aircraft positions (backup)
+    "opensky-network.org",      # aircraft positions (backup)
     "api.gdeltproject.org",     # news headline search
+    "news.google.com",          # news headline search (backup)
 }
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 5599
 ROOT = os.path.dirname(os.path.abspath(__file__))
