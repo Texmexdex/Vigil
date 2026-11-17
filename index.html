@@ -403,9 +403,9 @@ function polysOf(g) { if (!g) return []; if (g.type === 'Polygon') return [g.coo
 function inRing(lon, lat, ring) { let inside = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside; } return inside; }
 function polyDist(g, lat, lon) { let best = Infinity, c = null; for (const p of polysOf(g)) { if (inRing(lon, lat, p[0])) return { d: 0, at: [lon, lat] }; const step = Math.max(1, Math.floor(p[0].length / 200)); for (let i = 0; i < p[0].length; i += step) { const [x, y] = p[0][i], d = distMi(lat, lon, y, x); if (d < best) { best = d; c = [x, y]; } } } return { d: best, at: c }; }
 function boundsOf(g) { let b = [180, 90, -180, -90]; const walk = c => { if (typeof c[0] === 'number') { b[0] = Math.min(b[0], c[0]); b[1] = Math.min(b[1], c[1]); b[2] = Math.max(b[2], c[0]); b[3] = Math.max(b[3], c[1]); } else c.forEach(walk); }; (g.type === 'GeometryCollection' ? g.geometries : [g]).forEach(x => walk(x.coordinates)); return b; }
-function centralWall(y, mo, d, hh, mi, ss = 0) { // a US Central wall-clock time as a real instant
+function centralWall(y, mo, d, hh, mi, ss = 0, tz = 'America/Chicago') { // a local wall-clock time in tz, as a real instant
   const guess = Date.UTC(y, mo - 1, d, hh, mi, ss);
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(guess)).map(x => [x.type, x.value]));
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(guess)).map(x => [x.type, x.value]));
   return guess - (Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - guess);
 }
 function centralToUTC(str) { // "11/14/2026 04:34 PM"
@@ -879,6 +879,48 @@ async function fetchIMPD() {
   }).filter(i => i.sev >= 2 || /suspicious|disturb|accident/i.test(i.title));
 }
 
+/* Bloomington police calls: city open data, refreshed nightly, no addresses (district codes only). */
+async function fetchBloomington() {
+  const t0 = new Date(Date.now() - 72 * 36e5), pad = n => String(n).padStart(2, '0');
+  const since = `${t0.getUTCFullYear()}-${pad(t0.getUTCMonth() + 1)}-${pad(t0.getUTCDate())}T00:00:00`;
+  const rows = await get(`https://data.bloomington.in.gov/resource/t5xf-ggw6.json?$where=${encodeURIComponent(`datetime > '${since}'`)}&$order=${encodeURIComponent('datetime DESC')}&$limit=3000`, { timeout: 20000 });
+  S.bloomNewest = 0;
+  return (Array.isArray(rows) ? rows : []).map(r => {
+    const m = String(r.datetime || '').match(/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)/); if (!m || !r.nature) return null;
+    const t = centralWall(+m[1], +m[2], +m[3], +m[4], +m[5], +m[6], 'America/Indiana/Indianapolis'); S.bloomNewest = Math.max(S.bloomNewest, t);
+    if (IMPD_SKIP.test(r.nature)) return null;
+    const [cat, sevRaw] = classifyIMPD(r.nature), sev = Math.min(2, sevRaw); if (sevRaw < 2) return null;
+    const nature = titleCase(r.nature).replace(/\bIp\b/, '(in progress)').replace(/\bNp\b/, '(not in progress)').replace(/\bHlth\b/, 'Health');
+    return { id: 'bpd-' + r.case_number, cat, sev, title: nature, sub: `Bloomington police · district ${r.district || 'not given'}`, lat: 39.1653, lon: -86.5264, t, url: 'https://data.bloomington.in.gov/d/t5xf-ggw6',
+      facts: [['Call type', r.nature], ['Received', fmtWhen(t)], ['Agency', r.agency || 'BPD'], ['Outcome', r.report || 'not recorded'], ['District code', r.district || '']], long: 'From the City of Bloomington\'s open data, refreshed nightly. The city does not publish addresses for these calls, only a district code, so they are listed but not mapped.', pin: false, noDist: true, alwaysFeed: true, delayed: true, areaLabel: 'Bloomington, address not published', tags: ['1 to 2 days old'], srcTag: 'Bloomington PD' };
+  }).filter(Boolean);
+}
+/* Purdue police daily crime log (West Lafayette campus). Posted a day or two late; locations are building names. */
+const PURDUE_CENTER = [40.4259, -86.9137];
+async function geocodePurdue(place) { // search only inside the campus area; a bare "Purdue University" match means no real match
+  const key = 'pu:' + place; if (key in geoCache) return geoCache[key];
+  let out = null;
+  try { const r = await get(`https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&maxLocations=1&searchExtent=${encodeURIComponent('-86.945,40.405,-86.895,40.442')}&location=-86.9212,40.4259&SingleLine=${encodeURIComponent(place.replace(/\//g, ' & ') + ', Purdue University, West Lafayette, IN')}`, { timeout: 12000 });
+    const c = r.candidates?.[0]; if (c && c.score >= 80 && !/^Purdue University$/i.test(c.address)) out = { lat: c.location.y, lon: c.location.x }; } catch { return null; }
+  geoCache[key] = out; store.set('vigil.geo', geoCache); return out;
+}
+async function fetchPurdue() {
+  const doc = new DOMParser().parseFromString(await relayGet('https://www.purdue.edu/ehps/police/statistics-policies/daily-crime-log.php'), 'text/html');
+  const rows = [...doc.querySelectorAll('tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.replace(/\s+/g, ' ').trim())).filter(c => c.length >= 6 && /\d/.test(c[3]));
+  const parseT = s => { const m = String(s).match(/(\d+)\/(\d+)\/(\d+)\s+(\d+):(\d+)\s*(AM|PM)/i); return m ? centralWall(2000 + (+m[3] % 100), +m[1], +m[2], (+m[4]) % 12 + (/pm/i.test(m[6]) ? 12 : 0), +m[5], 0, 'America/Indiana/Indianapolis') : 0; };
+  const out = [];
+  for (const [nature, caseNo, occurred, reported, place, disp] of rows) {
+    const t = parseT(reported) || parseT(occurred); if (!t || Date.now() - t > 4 * 864e5) continue;
+    const pos = await geocodePurdue(place), placed = !!pos;
+    const violent = /battery|assault|robbery|weapon|rape|sexual|intimidation|stalking|burglary|arson|strangulation/i.test(nature);
+    out.push({ id: 'pupd-' + caseNo, cat: 'police', sev: violent ? 2 : 1, title: nature.replace(/Intoxicatoin/gi, 'Intoxication'), sub: `${place} · Purdue police`, lat: placed ? pos.lat : PURDUE_CENTER[0], lon: placed ? pos.lon : PURDUE_CENTER[1], t,
+      url: 'https://www.purdue.edu/ehps/police/statistics-policies/daily-crime-log.php', facts: [['Occurred', occurred], ['Reported', reported], ['Location', place], ['Outcome', disp], ['Case', caseNo]],
+      long: 'From Purdue University Police\'s daily crime log, which is posted a day or two after the fact and covers the West Lafayette campus. Pins are placed by matching the building or street name, so treat them as approximate.' + (placed ? '' : ' This one could not be matched, so it sits at the centre of campus.'),
+      pin: true, delayed: true, tags: ['1 to 2 days old'], srcTag: 'Purdue PD' });
+  }
+  return out;
+}
+
 const relayGate = () => relayBase() ? null : 'Needs a relay. See Layers';
 const houstonGate = () => distMi(S.loc.lat, S.loc.lon, 29.7604, -95.3698) > 70 ? 'Only covers the City of Houston' : null;
 const texasGate = () => inTexas() ? null : 'Only covers Texas';
@@ -889,6 +931,8 @@ const SOURCES = [
   { id: 'in511',  name: 'Indiana road incidents and closures', org: 'INDOT TrafficWise (511IN)', every: 180, run: fetchIndianaRoads, relay: true, gate: () => indianaGate() || relayGate(), url: 'https://511in.org/', note: 'Crashes, closures, flooding and winter conditions on Indiana roads, through your Cloudflare relay.' },
   { id: 'incams', name: 'Indiana traffic cameras',        org: 'INDOT TrafficWise (511IN)', every: 21600, run: fetchIndianaCams, relay: true, soft: true, gate: () => indianaGate() || relayGate(), label: () => S.camsIn.length + ' cameras', url: 'https://511in.org/', note: 'Live stills from the nearest INDOT camera, shown inside an incident when one is within 1 mi.' },
   { id: 'impd',   name: 'Indianapolis police calls',      org: 'IMPD public data',          every: 900, run: fetchIMPD, gate: nearGate(39.7684, -86.1581, 30, 'Only covers Indianapolis'), label: () => `${(S.items.get('impd') || []).length} notable calls · newest ${S.impdNewest ? ago(S.impdNewest) + ' old' : '…'}`, url: 'https://www.indy.gov/activity/impd-transparency-portal', note: 'Every kind of police call with block address and outcome, published about a day late. Routine calls are left out.' },
+  { id: 'bloom',  name: 'Bloomington police calls',       org: 'City of Bloomington open data', every: 1800, run: fetchBloomington, gate: nearGate(39.1653, -86.5264, 15, 'Only covers Bloomington'), label: () => `${(S.items.get('bloom') || []).length} notable calls · newest ${S.bloomNewest ? ago(S.bloomNewest) + ' old' : '…'}`, url: 'https://data.bloomington.in.gov/d/t5xf-ggw6', note: 'Notable Bloomington police calls from the last three days. Refreshed nightly; the city does not publish addresses, so these are listed, not mapped.' },
+  { id: 'purdue', name: 'Purdue police crime log',        org: 'Purdue University Police', every: 3600, run: fetchPurdue, relay: true, gate: () => nearGate(40.4167, -86.8753, 15, 'Only covers Lafayette and West Lafayette')() || relayGate(), url: 'https://www.purdue.edu/ehps/police/statistics-policies/daily-crime-log.php', note: 'Crimes reported on and around the West Lafayette campus, posted a day or two late. Pins are approximate.' },
   { id: 'nws',    name: 'Weather alerts',                 org: 'National Weather Service', every: 60,  run: fetchNWS,   url: 'https://www.weather.gov/', note: 'Every alert covering your exact point, plus warning polygons within 30 mi.' },
   { id: 'obs',    name: 'Wind and conditions',            org: 'Nearest NWS station',      every: 600, run: fetchObs, label: () => S.cond ? (S.cond.kind === 'model' ? 'model estimate' : 'station ' + S.cond.id) : '',   url: 'https://www.weather.gov/', note: 'Measured at the closest reporting station. Falls back to a model, and says so.' },
   { id: 'ltg',    name: 'Lightning strikes',              org: 'Blitzortung.org community network', every: 20, run: fetchLightning, gate: () => S.layers.ltg ? null : 'Turned off in Layers', label: () => `${LTG.strikes.length} within 200 mi, 30 min · ${(LTG.bytes / 1e6).toFixed(1)} MB streamed`, url: 'https://map.blitzortung.org/', note: 'Live strikes from volunteer receivers. Strikes within 15 mi show in Nearby; within 6 mi is flagged serious.' },
@@ -941,7 +985,7 @@ function allItems() {
   return out;
 }
 const feedItems = items => items.filter(i => S.cats[i.cat] && i.feed !== false && (i.inRange || (i.alwaysFeed && i.dist <= 250))).sort((a, b) => (a.delayed ? 1 : 0) - (b.delayed ? 1 : 0) || b.sev - a.sev || (b.atPoint ? 1 : 0) - (a.atPoint ? 1 : 0) || a.dist - b.dist).slice(0, 200);
-const distLabel = i => i.atPoint ? 'at your location' : i.noDist ? 'county level' : i.dist < 0.1 ? 'right here' : `${i.dist < 10 ? i.dist.toFixed(1) : Math.round(i.dist)} mi ${compass(i.brg)}`;
+const distLabel = i => i.atPoint ? 'at your location' : i.noDist ? (i.areaLabel || 'county level') : i.dist < 0.1 ? 'right here' : `${i.dist < 10 ? i.dist.toFixed(1) : Math.round(i.dist)} mi ${compass(i.brg)}`;
 
 let raf = 0; const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); };
 function render() { const items = allItems(), feed = feedItems(items); renderHead(items, feed); renderChips(items); renderFeed(feed); renderChatter(); renderFlights(); renderSources(); renderMap(items); }

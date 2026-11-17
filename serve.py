@@ -25,6 +25,7 @@ ALLOWED = {
     "opensky-network.org",      # aircraft positions (backup)
     "api.gdeltproject.org",     # news headline search
     "news.google.com",          # news headline search (backup)
+    "www.purdue.edu",           # Purdue police daily crime log
 }
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 PORT = int(ARGS[0]) if ARGS else 5599

@@ -12,6 +12,7 @@ const ALLOWED = new Set([
   'opensky-network.org',     // aircraft positions (backup)
   'api.gdeltproject.org',    // news headline search
   'news.google.com',         // news headline search (backup)
+  'www.purdue.edu',          // Purdue police daily crime log
 ]);
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, OPTIONS' };
 
