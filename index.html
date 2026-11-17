@@ -423,7 +423,7 @@ const S = {
   layers: Object.assign({ radar: true, sat: false, flow: true, ltg: true, wind: true, jams: true, air: true, gauges: true, cams: false }, saved.layers || {}),
   chime: !!saved.chime, relay: saved.relay || '', follow: !!saved.follow, chatter: [], news: [], flights: [], flightSel: null, chatterCity: '', origin: null, autoRelay: '',
   items: new Map(), src: {}, seen: new Map(), token: 0,
-  wind: null, cond: null, air: [], gauges: [], jamLines: [], cams: [], nearestAir: null,
+  wind: null, cond: null, air: [], gauges: [], jamLines: [], cams: [], camsIn: [], nearestAir: null,
   selected: null, tab: 'feed', point: null,
 };
 (function fromHash() { const m = location.hash.match(/^#(-?\d+\.\d+),(-?\d+\.\d+)(?:,(\d+))?$/); if (m) { S.loc = { lat: +m[1], lon: +m[2], label: 'Linked position', src: 'link' }; if (RADII.includes(+m[3])) S.radius = +m[3]; } })();
@@ -600,10 +600,12 @@ async function fetchCams() {
   S.cams = (q.features || []).map(f => f.attributes).filter(a => a.CAMERA_ID && a.LATITUDE && a.LONGITUDE && !seen.has(a.CAMERA_ID) && seen.add(a.CAMERA_ID)).map(a => ({ id: a.CAMERA_ID, name: a.LOCATION, lat: a.LATITUDE, lon: a.LONGITUDE }));
   return [];
 }
-const camShot = id => `https://www.houstontranstar.org/snapshots/cctv/${encodeURIComponent(id)}.jpg?t=${Math.floor(Date.now() / 15000)}`;
-const camPage = c => `https://traffic.houstontranstar.org/layers/gc.aspx?cam=${encodeURIComponent(c.id)}`;
-function nearestCam(lat, lon, maxMi = 0.75) { let best = null, bd = maxMi; for (const c of S.cams) { if (Math.abs(c.lat - lat) > 0.02) continue; const d = distMi(lat, lon, c.lat, c.lon); if (d < bd) { bd = d; best = c; } } return best && { ...best, d: bd, brg: bearing(lat, lon, best.lat, best.lon) }; }
-const camHTML = (c, lead) => `<figure class="cam"><img src="${esc(camShot(c.id))}" data-cam="${esc(c.id)}" alt="Live still from the ${esc(c.name)} camera" loading="lazy"><figcaption>${lead}${esc(c.name)} · still image, refreshes itself · <a href="${esc(camPage(c))}" target="_blank" rel="noopener">Houston TranStar</a></figcaption></figure>`;
+const camBase = c => c.img || `https://www.houstontranstar.org/snapshots/cctv/${encodeURIComponent(c.id)}.jpg`;
+const camShot = base => base + (base.includes('?') ? '&' : '?') + 't=' + Math.floor(Date.now() / 15000);
+const camPage = c => c.page || `https://traffic.houstontranstar.org/layers/gc.aspx?cam=${encodeURIComponent(c.id)}`;
+const allCams = () => S.cams.concat(S.camsIn);
+function nearestCam(lat, lon, maxMi = 1) { let best = null, bd = maxMi; for (const c of allCams()) { if (Math.abs(c.lat - lat) > 0.02) continue; const d = distMi(lat, lon, c.lat, c.lon); if (d < bd) { bd = d; best = c; } } return best && { ...best, d: bd, brg: bearing(lat, lon, best.lat, best.lon) }; }
+const camHTML = (c, lead) => `<figure class="cam"><img src="${esc(camShot(camBase(c)))}" data-cam="${esc(camBase(c))}" alt="Live still from the ${esc(c.name)} camera" loading="lazy"><figcaption>${lead}${esc(c.name)} · still image, refreshes itself · <a href="${esc(camPage(c))}" target="_blank" rel="noopener">${esc(c.owner || 'Houston TranStar')}</a></figcaption></figure>`;
 
 /* Public social posts. Never mapped, never counted in the headline: this is a hint, not a fact. */
 const CHATTER_TERMS = ['fire', 'explosion', 'shooting', 'evacuation', 'shelter in place', 'flaring', 'hazmat', 'tornado', 'flooding', 'crash', 'power outage', 'police'];
@@ -827,6 +829,56 @@ async function fetchFlights() {
 }
 const flightName = f => TYPE_NAMES[(f.meta.t || '').toUpperCase()] || f.meta.t || 'Unknown type';
 
+/* ----- Indiana ----- */
+const IN_BOX = [37.6, 41.9, -88.2, -84.6]; // south, north, west, east
+const indianaGate = () => { const [s, n, w, e] = IN_BOX, m = 0.4; return S.loc.lat > s - m && S.loc.lat < n + m && S.loc.lon > w - m && S.loc.lon < e + m ? null : 'Only covers Indiana'; };
+const in511URL = (layers, mi, z) => { const [w, s, e, n] = bbox(mi); return `${relayBase().replace(/\/relay$/, '')}/in511?layers=${layers}&n=${n.toFixed(3)}&s=${s.toFixed(3)}&e=${e.toFixed(3)}&w=${w.toFixed(3)}&z=${z}`; };
+async function fetchIndianaRoads() {
+  const j = await get(in511URL('incidents,closures,flooding,winterDriving', FETCH_MI, 12), { timeout: 25000 });
+  const feats = j?.data?.mapFeaturesQuery?.mapFeatures; if (!Array.isArray(feats)) throw new Error(j?.error || j?.errors?.[0]?.message || 'no data');
+  const seen = new Set();
+  return feats.filter(f => f.__typename === 'Event' && f.features?.[0]?.geometry && !seen.has(f.uri) && seen.add(f.uri)).map(f => {
+    const g = f.features[0].geometry, c = g.type === 'Point' ? g.coordinates : g.type === 'LineString' ? g.coordinates[Math.floor(g.coordinates.length / 2)] : g.coordinates.flat(2).length >= 2 ? g.coordinates.flat(Infinity).slice(0, 2) : null;
+    if (!c) return null;
+    const t = String(f.title || ''), low = t.toLowerCase(), water = /flood|high water/.test(low), closed = /closed|closure/.test(low);
+    const sev = f.priority != null && f.priority <= 1 ? 3 : (closed && /^i-|interstate|us-/i.test(t)) || f.priority === 2 ? 2 : 1;
+    const [road, ...rest] = t.split(':');
+    return { id: 'in511-' + f.uri, cat: water ? 'water' : 'traffic', sev, title: rest.length ? rest.join(':').trim().replace(/\.$/, '') : t, sub: rest.length ? road.trim() : (f.tooltip || ''), lat: c[1], lon: c[0], t: 0, noAge: true,
+      url: `https://511in.org/${f.uri}`, facts: [['Road', road.trim()], ['Details', f.tooltip || t]], pin: true, srcTag: 'INDOT 511' };
+  }).filter(Boolean);
+}
+async function fetchIndianaCams() {
+  const j = await get(in511URL('normalCameras', FETCH_MI, 12), { timeout: 25000 });
+  const feats = j?.data?.mapFeaturesQuery?.mapFeatures; if (!Array.isArray(feats)) throw new Error('no data');
+  S.camsIn = feats.filter(f => f.__typename === 'Camera' && f.active !== false && f.views?.[0]?.url && f.features?.[0]?.geometry?.type === 'Point').map(f => { const c = f.features[0].geometry.coordinates; return { id: f.uri, name: String(f.title || '').replace(/\s+\d-\d{3}-\d{3}-\d-\d\s+/, ' · '), lat: c[1], lon: c[0], img: f.views[0].url, page: `https://511in.org/${f.uri}`, owner: 'INDOT 511' }; });
+  return [];
+}
+/* Indianapolis police calls (IMPD). Every call type, block-level, but published about a day late. */
+const IMPD_SKIP = /incomplete 911|traffic stop|vin check|warr|follow ?up|report only|info|test call|business check|premise check|extra patrol|transport|meet|parking|abandon|wrecker|tow|park walk|special attention|community|school|directed patrol|admin|court|civil|animal|noise|lost|found property|alarm/i;
+function classifyIMPD(ty) {
+  const t = ty.toLowerCase();
+  if (/person shot|shots? fired|shooting|stab|cut|homicide|dead body|kidnap|hostage|barricad|swat|armed|carjack|officer (down|needs)/.test(t)) return ['police', 3];
+  if (/robbery|burglary.*(prog|now)|assault|battery|fight|weapon|gun|pursuit|disturb|domestic|threat|trespass.*prog|suspicious person/.test(t)) return ['police', 2];
+  if (/accident|crash|hit and run|pi\b|property damage/.test(t)) return ['traffic', /pi\b|injur|hit and run|fatal/.test(t) ? 2 : 1];
+  if (/fire|smoke/.test(t)) return ['fire', 2];
+  if (/overdose|medical|unconscious|sick|injured/.test(t)) return ['ems', 1];
+  return ['police', 1];
+}
+async function fetchIMPD() {
+  // Filtering by place is very slow on the city's server, so ask by date (fast) and filter by distance here.
+  const since = new Date(Date.now() - 48 * 36e5).toISOString().slice(0, 10), base = 'https://gis.indy.gov/server/rest/services/IMPD/IMPD_Public_Data/MapServer/0/query?';
+  const params = off => new URLSearchParams({ where: `sDate >= '${since}'`, outFields: 'CAD,IncidentType,PrimaryDisp,sAddress,RecDateTime,Geo_Districts,CallSource,Latitude,Longitude', returnGeometry: 'false', orderByFields: 'RecDateTime DESC', resultOffset: off, resultRecordCount: 2000, f: 'json' });
+  const feats = [];
+  for (let off = 0; off < 8000; off += 2000) { const j = await get(base + params(off), { timeout: 20000 }); const f = j.features || []; feats.push(...f); if (f.length < 2000) break; }
+  const q = { features: feats.filter(f => f.attributes.Latitude && distMi(S.loc.lat, S.loc.lon, f.attributes.Latitude, f.attributes.Longitude) <= Math.min(FETCH_MI, 20)) };
+  const rows = (q.features || []).map(f => f.attributes); S.impdNewest = Math.max(0, ...rows.map(a => a.RecDateTime || 0));
+  return rows.filter(a => a.Latitude && a.Longitude && a.IncidentType && !IMPD_SKIP.test(a.IncidentType)).map(a => {
+    const ty = String(a.IncidentType).replace(/^\s*\w+\s*-\s*/, '').trim(), [cat, sevRaw] = classifyIMPD(ty), sev = Math.min(2, sevRaw); // old news never outranks something happening now
+    return { id: 'impd-' + a.CAD, cat, sev, title: titleCase(ty), sub: titleCase(a.sAddress || ''), lat: a.Latitude, lon: a.Longitude, t: a.RecDateTime, url: 'https://www.indy.gov/activity/impd-transparency-portal',
+      facts: [['Call type', a.IncidentType], ['Received', fmtWhen(a.RecDateTime)], ['Outcome', a.PrimaryDisp || 'not recorded'], ['District', a.Geo_Districts || ''], ['Source', a.CallSource || '']], long: 'From IMPD\'s public data, which is published about a day late. Locations are block-level.', pin: true, delayed: true, tags: ['about a day old'], srcTag: 'IMPD' };
+  }).filter(i => i.sev >= 2 || /suspicious|disturb|accident/i.test(i.title));
+}
+
 const relayGate = () => relayBase() ? null : 'Needs a relay. See Layers';
 const houstonGate = () => distMi(S.loc.lat, S.loc.lon, 29.7604, -95.3698) > 70 ? 'Only covers the City of Houston' : null;
 const texasGate = () => inTexas() ? null : 'Only covers Texas';
@@ -834,6 +886,9 @@ const SOURCES = [
   { id: 'hec',    name: 'Fire, EMS and police dispatch', org: 'Houston Emergency Center', every: 90,  run: fetchHEC,   gate: houstonGate, url: 'https://cohweb.houstontx.gov/ActiveIncidents/Combined.aspx', note: 'Active calls inside the City of Houston. HPD only publishes crashes and traffic hazards.' },
   { id: 'austin', name: 'Austin traffic and fire incidents', org: 'Austin-Travis County dispatch', every: 120, run: fetchAustin, gate: nearGate(30.2672, -97.7431, 60, 'Only covers the Austin area'), url: 'https://data.austintexas.gov/Transportation-and-Mobility/Real-Time-Traffic-Incident-Reports/dx9v-zd7x', note: 'Active crashes, hazards and vehicle fires from Austin and Travis County agencies.' },
   { id: 'dallas', name: 'Dallas police active calls',     org: 'Dallas Police Department',  every: 120, run: fetchDallas, label: () => `${(S.items.get('dallas') || []).length} of ${S.dallasTotal || 0} calls placed`, gate: nearGate(32.7767, -96.797, 45, 'Only covers the City of Dallas'), url: 'https://www.dallasopendata.com/Public-Safety/Dallas-Police-Active-Calls/9fxf-t2tr', note: 'Every call officers are on. Published without coordinates, so only confident address matches are mapped.' },
+  { id: 'in511',  name: 'Indiana road incidents and closures', org: 'INDOT TrafficWise (511IN)', every: 180, run: fetchIndianaRoads, relay: true, gate: () => indianaGate() || relayGate(), url: 'https://511in.org/', note: 'Crashes, closures, flooding and winter conditions on Indiana roads, through your Cloudflare relay.' },
+  { id: 'incams', name: 'Indiana traffic cameras',        org: 'INDOT TrafficWise (511IN)', every: 21600, run: fetchIndianaCams, relay: true, soft: true, gate: () => indianaGate() || relayGate(), label: () => S.camsIn.length + ' cameras', url: 'https://511in.org/', note: 'Live stills from the nearest INDOT camera, shown inside an incident when one is within 1 mi.' },
+  { id: 'impd',   name: 'Indianapolis police calls',      org: 'IMPD public data',          every: 900, run: fetchIMPD, gate: nearGate(39.7684, -86.1581, 30, 'Only covers Indianapolis'), label: () => `${(S.items.get('impd') || []).length} notable calls · newest ${S.impdNewest ? ago(S.impdNewest) + ' old' : '…'}`, url: 'https://www.indy.gov/activity/impd-transparency-portal', note: 'Every kind of police call with block address and outcome, published about a day late. Routine calls are left out.' },
   { id: 'nws',    name: 'Weather alerts',                 org: 'National Weather Service', every: 60,  run: fetchNWS,   url: 'https://www.weather.gov/', note: 'Every alert covering your exact point, plus warning polygons within 30 mi.' },
   { id: 'obs',    name: 'Wind and conditions',            org: 'Nearest NWS station',      every: 600, run: fetchObs, label: () => S.cond ? (S.cond.kind === 'model' ? 'model estimate' : 'station ' + S.cond.id) : '',   url: 'https://www.weather.gov/', note: 'Measured at the closest reporting station. Falls back to a model, and says so.' },
   { id: 'ltg',    name: 'Lightning strikes',              org: 'Blitzortung.org community network', every: 20, run: fetchLightning, gate: () => S.layers.ltg ? null : 'Turned off in Layers', label: () => `${LTG.strikes.length} within 200 mi, 30 min · ${(LTG.bytes / 1e6).toFixed(1)} MB streamed`, url: 'https://map.blitzortung.org/', note: 'Live strikes from volunteer receivers. Strikes within 15 mi show in Nearby; within 6 mi is flagged serious.' },
@@ -872,7 +927,7 @@ async function runSource(s) {
   } finally { st.busy = false; st.next = Date.now() + (st.state === 'ok' ? s.every : Math.min(s.every, 60)) * 1000; schedule(); }
 }
 function tick() { if (document.hidden) return; const now = Date.now(); SOURCES.forEach(s => { if (now >= S.src[s.id].next) runSource(s); }); }
-function refreshAll() { S.token++; S.origin = { lat: S.loc.lat, lon: S.loc.lon }; S.items.clear(); S.seen.clear(); S.air = []; S.gauges = []; S.jamLines = []; S.cams = []; S.chatter = []; S.news = []; S.cond = null; S.point = null; SOURCES.forEach(s => Object.assign(S.src[s.id], { state: 'idle', at: 0, next: 0, busy: false, loaded: false, err: null })); tick(); schedule(); }
+function refreshAll() { S.token++; S.origin = { lat: S.loc.lat, lon: S.loc.lon }; S.items.clear(); S.seen.clear(); S.air = []; S.gauges = []; S.jamLines = []; S.cams = []; S.camsIn = []; S.chatter = []; S.news = []; S.cond = null; S.point = null; SOURCES.forEach(s => Object.assign(S.src[s.id], { state: 'idle', at: 0, next: 0, busy: false, loaded: false, err: null })); tick(); schedule(); }
 
 /* ============================================================ derived view */
 function allItems() {
@@ -885,7 +940,7 @@ function allItems() {
   }
   return out;
 }
-const feedItems = items => items.filter(i => S.cats[i.cat] && i.feed !== false && (i.inRange || (i.alwaysFeed && i.dist <= 250))).sort((a, b) => b.sev - a.sev || (b.atPoint ? 1 : 0) - (a.atPoint ? 1 : 0) || a.dist - b.dist).slice(0, 200);
+const feedItems = items => items.filter(i => S.cats[i.cat] && i.feed !== false && (i.inRange || (i.alwaysFeed && i.dist <= 250))).sort((a, b) => (a.delayed ? 1 : 0) - (b.delayed ? 1 : 0) || b.sev - a.sev || (b.atPoint ? 1 : 0) - (a.atPoint ? 1 : 0) || a.dist - b.dist).slice(0, 200);
 const distLabel = i => i.atPoint ? 'at your location' : i.noDist ? 'county level' : i.dist < 0.1 ? 'right here' : `${i.dist < 10 ? i.dist.toFixed(1) : Math.round(i.dist)} mi ${compass(i.brg)}`;
 
 let raf = 0; const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); };
@@ -895,13 +950,15 @@ function renderHead(items, feed) {
   const core = ['hec', 'austin', 'dallas', 'nws'].filter(id => S.src[id].state !== 'off'), ready = SOURCES.filter(s => S.src[s.id].loaded).length, active = SOURCES.filter(s => S.src[s.id].state !== 'off');
   const bad = active.filter(s => !s.soft && ['error', 'stale'].includes(S.src[s.id].state)), loading = core.some(id => !S.src[id].loaded && S.src[id].state !== 'error');
   const hl = $('#hl'), sub = $('#hl-sub'), box = $('#headline'), r = S.radius, mi = r === 1 ? 'mile' : 'miles';
-  const top = feed.filter(i => i.sev >= 4), serious = feed.filter(i => i.sev === 3);
+  const liveF = feed.filter(i => !i.delayed), old = feed.length - liveF.length, top = liveF.filter(i => i.sev >= 4), serious = liveF.filter(i => i.sev === 3);
+  const oldNote = old ? ` Plus ${old} police ${old === 1 ? 'call' : 'calls'} from the last day or two.` : '';
   let cls = '', h, s;
   if (loading && !feed.length) { h = 'Checking what is happening near you…'; s = `Heard back from ${ready} of ${active.length} live feeds.`; }
   else if (top.length) { cls = 'sev4'; const i = top[0]; h = `<em>${esc(i.title)}</em> ${i.atPoint ? 'for your location.' : esc(distLabel(i)) + '.'}`; s = top.length + serious.length > 1 ? `${top.length + serious.length} serious incidents within ${r} ${mi}.` : 'The only serious incident in range.'; }
-  else if (serious.length === 1) { cls = 'sev3'; const i = serious[0]; h = `<em>${esc(i.title)}</em>, ${esc(distLabel(i))}.`; s = `${feed.length - 1} other routine ${feed.length - 1 === 1 ? 'item' : 'items'} within ${r} ${mi}.`; }
+  else if (serious.length === 1) { cls = 'sev3'; const i = serious[0]; h = `<em>${esc(i.title)}</em>, ${esc(distLabel(i))}.`; s = `${liveF.length - 1} other routine ${liveF.length - 1 === 1 ? 'item' : 'items'} within ${r} ${mi}.${oldNote}`; }
   else if (serious.length) { cls = 'sev3'; h = `<em>${serious.length} serious incidents</em> within ${r} ${mi}.`; s = `Nearest: ${esc(serious.sort((a, b) => a.dist - b.dist)[0].title.toLowerCase())}, ${esc(distLabel(serious[0]))}.`; }
-  else if (feed.length) { h = `<em>Quiet</em> within ${r} ${mi}.`; s = `${feed.length} routine ${feed.length === 1 ? 'call or notice' : 'calls and notices'}, nothing serious.`; }
+  else if (liveF.length) { h = `<em>Quiet</em> within ${r} ${mi}.`; s = `${liveF.length} routine ${liveF.length === 1 ? 'call or notice' : 'calls and notices'}, nothing serious.${oldNote}`; }
+  else if (old) { h = `<em>Nothing active</em> within ${r} ${mi}.`; s = oldNote.trim(); }
   else { h = `<em>Nothing active</em> within ${r} ${mi}.`; s = 'No open calls, alerts or detections in range.'; }
   if (bad.length && !(loading && !feed.length)) s += ` ${bad.length} ${bad.length === 1 ? 'feed is' : 'feeds are'} not answering.`;
   box.className = 'headline ' + cls; if (hl.innerHTML !== h) hl.innerHTML = h; sub.textContent = s;
@@ -936,7 +993,7 @@ function renderFeed(feed) {
   const el = $('#feed'), anyLoaded = SOURCES.some(s => S.src[s.id].loaded);
   if (!anyLoaded) return;
   if (!feed.length) { const html = `<div class="empty"><b>All clear in range.</b>Widen the radius or check the Sources tab to see what each feed returned.</div>`; if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; } return; }
-  const html = feed.map(i => `<button class="card s${i.sev}${S.selected === i.id ? ' sel' : ''}" data-id="${esc(i.id)}"><span class="ic" style="--c:${CATS[i.cat].color}">${svgIcon(i.cat)}</span><span><span class="r1"><span class="ttl">${esc(i.title)}</span><span class="age">${esc(ago(i.t))}</span></span><span class="r2">${esc(i.sub)}</span><span class="r3"><span class="dist">${esc(distLabel(i))}</span>${i.isNew ? '<span class="tag new">new</span>' : ''}${i.atPoint ? '<span class="tag here">covers you</span>' : ''}${i.upwind ? '<span class="tag up">upwind of you</span>' : ''}${(i.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('')}<span class="src">${esc(i.srcTag || '')}</span></span></span></button>`).join('');
+  const html = feed.map(i => `<button class="card s${i.sev}${S.selected === i.id ? ' sel' : ''}" data-id="${esc(i.id)}"><span class="ic" style="--c:${CATS[i.cat].color}">${svgIcon(i.cat)}</span><span><span class="r1"><span class="ttl">${esc(i.title)}</span><span class="age">${i.noAge ? 'active' : esc(ago(i.t))}</span></span><span class="r2">${esc(i.sub)}</span><span class="r3"><span class="dist">${esc(distLabel(i))}</span>${i.isNew ? '<span class="tag new">new</span>' : ''}${i.atPoint ? '<span class="tag here">covers you</span>' : ''}${i.upwind ? '<span class="tag up">upwind of you</span>' : ''}${(i.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('')}<span class="src">${esc(i.srcTag || '')}</span></span></span></button>`).join('');
   if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
 }
 
@@ -1007,7 +1064,7 @@ function addLoopLayers(vis) {
   const t0 = Math.floor(Date.now() / 6e5) * 6e5 - 60 * 6e4; // a safe guess until the real latest time is known
   for (let i = 0; i < NF; i++) {
     map.addSource('src-' + SAT_IDS[i], { type: 'raster', tiles: satTiles(iso10(t0 - (NF - 1 - i) * 6e5)), tileSize: 256, maxzoom: 7, ...(i === NF - 1 ? { attribution: 'Satellite NASA GIBS / NOAA GOES-East' } : {}) });
-    map.addLayer({ id: SAT_IDS[i], type: 'raster', source: 'src-' + SAT_IDS[i], layout: { visibility: vis(S.layers.sat) }, paint: { 'raster-opacity': i === NF - 1 ? 0.62 : 0, 'raster-fade-duration': 0 } }, RADAR_IDS[0]);
+    map.addLayer({ id: SAT_IDS[i], type: 'raster', source: 'src-' + SAT_IDS[i], maxzoom: 9.5, layout: { visibility: vis(S.layers.sat) }, paint: { 'raster-opacity': i === NF - 1 ? 0.62 : 0, 'raster-fade-duration': 0 } }, RADAR_IDS[0]);
   }
 }
 function probeImg(u) { return new Promise(res => { const i = new Image(); i.crossOrigin = 'anonymous'; const to = setTimeout(() => res(false), 8000); i.onload = () => { clearTimeout(to); res(true); }; i.onerror = () => { clearTimeout(to); res(false); }; i.src = u; }); }
@@ -1230,7 +1287,7 @@ function renderMap(items) {
   set('jams', fc(S.cats.traffic && S.src.waze.state !== 'off' ? S.jamLines : []));
   set('air', fc(S.air.map(m => ({ type: 'Feature', properties: { ...m, color: aqiInfo(m.aqi).color }, geometry: { type: 'Point', coordinates: [m.lon, m.lat] } }))));
   set('gauges', fc(S.gauges.map(g => ({ type: 'Feature', properties: { ...g, flag: !!FLOOD[g.cat], color: FLOOD[g.cat] ? FLOOD[g.cat][2] : CATS.water.color }, geometry: { type: 'Point', coordinates: [g.lon, g.lat] } }))));
-  set('cams', fc(S.cams.map(c => ({ type: 'Feature', properties: c, geometry: { type: 'Point', coordinates: [c.lon, c.lat] } }))));
+  set('cams', fc(allCams().map(c => ({ type: 'Feature', properties: c, geometry: { type: 'Point', coordinates: [c.lon, c.lat] } }))));
   const sel = S.selected && items.find(i => i.id === S.selected);
   set('sel', sel && sel.pin ? fc([{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [sel.lon, sel.lat] } }]) : EMPTY);
 }
@@ -1297,7 +1354,7 @@ async function searchPlace(q) {
 }
 
 /* ============================================================ tone */
-let audio; function chimeFor(items) { const hit = items.find(i => i.sev >= 3 && (i.atPoint || distMi(S.loc.lat, S.loc.lon, i.lat, i.lon) <= S.radius)); if (!hit || !audio) return; try { const t = audio.currentTime; [660, 880].forEach((f, n) => { const o = audio.createOscillator(), g = audio.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0, t + n * 0.18); g.gain.linearRampToValueAtTime(0.18, t + n * 0.18 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + n * 0.18 + 0.5); o.connect(g).connect(audio.destination); o.start(t + n * 0.18); o.stop(t + n * 0.18 + 0.55); }); } catch {} }
+let audio; function chimeFor(items) { const hit = items.find(i => i.sev >= 3 && !i.delayed && (i.atPoint || distMi(S.loc.lat, S.loc.lon, i.lat, i.lon) <= S.radius)); if (!hit || !audio) return; try { const t = audio.currentTime; [660, 880].forEach((f, n) => { const o = audio.createOscillator(), g = audio.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0, t + n * 0.18); g.gain.linearRampToValueAtTime(0.18, t + n * 0.18 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + n * 0.18 + 0.5); o.connect(g).connect(audio.destination); o.start(t + n * 0.18); o.stop(t + n * 0.18 + 0.55); }); } catch {} }
 
 /* ============================================================ wiring */
 function closePops() { document.querySelectorAll('.pop').forEach(p => p.classList.remove('open')); $('#loc-btn').setAttribute('aria-expanded', 'false'); $('#layers-btn').setAttribute('aria-expanded', 'false'); }
