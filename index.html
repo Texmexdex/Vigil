@@ -217,6 +217,14 @@ a{color:inherit}
 .maplibregl-ctrl-group{background:rgba(13,19,26,.9)!important;border:1px solid var(--line)}
 .maplibregl-ctrl-group button+button{border-top:1px solid var(--line)!important}
 .maplibregl-ctrl-group button span{filter:invert(1);opacity:.75}
+#flow{position:fixed;inset:0;z-index:1;pointer-events:none;width:100%;height:100%}
+.player{position:fixed;z-index:4;left:calc(var(--panel-w) + 32px);bottom:16px;display:none;align-items:center;gap:10px;padding:7px 12px 7px 7px;border:1px solid var(--line);border-radius:999px;background:rgba(13,19,26,.9);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 12px 30px rgba(0,0,0,.45)}
+.player.on{display:flex}
+.player button{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--paper);color:var(--ink)}
+.player button svg{width:13px;height:13px}
+.player input[type=range]{width:min(240px,40vw);accent-color:var(--paper)}
+.player .pt{font:500 11px/1.25 var(--f-mono);color:var(--muted);min-width:118px;white-space:nowrap}
+.player .pt b{display:block;color:var(--paper);font-weight:500}
 .legend{position:fixed;z-index:3;right:12px;top:12px;display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;max-width:min(520px,calc(100vw - var(--panel-w) - 80px));font:500 10px/1 var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);pointer-events:none}
 .legend span{display:flex;align-items:center;gap:5px;background:rgba(10,15,20,.72);padding:4px 7px;border-radius:5px;border:1px solid var(--line)}
 .legend i{width:8px;height:8px;border-radius:50%;background:var(--c)}
@@ -235,6 +243,9 @@ a{color:inherit}
   .legend{display:none}
   .pop{top:auto;left:8px;right:8px;bottom:8px;width:auto;max-height:80dvh;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
   #map-fail{padding:24px 24px 60dvh}
+  .player{left:8px;right:8px;bottom:calc(var(--sheet) + 8px);justify-content:space-between}
+  .player input[type=range]{flex:1;width:auto}
+  body[data-sheet=full] .player{display:none}
   .cond{grid-template-columns:1.2fr .8fr 1.3fr}
   .cond div{padding:9px 10px 10px}
   .cond span{font-size:12px}
@@ -246,7 +257,13 @@ a{color:inherit}
 <body data-sheet="half">
 <div id="map" aria-label="Map of nearby incidents"></div>
 <div id="map-fail"><div><b style="font:italic 400 24px var(--f-display);color:var(--paper)">The map could not load.</b><br>The feed still works. Check your connection, then reload.</div></div>
+<canvas id="flow" aria-hidden="true"></canvas>
 <div class="vignette"></div>
+<div class="player" id="player" role="group" aria-label="Weather loop">
+  <button id="pl-play" aria-label="Pause loop"><svg viewBox="0 0 24 24" fill="currentColor" id="pl-ico"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg></button>
+  <input type="range" id="pl-range" min="0" max="11" value="11" aria-label="Loop frame">
+  <span class="pt" id="pl-time">—</span>
+</div>
 <div class="legend" id="legend" aria-hidden="true"></div>
 
 <section class="panel" id="panel" aria-label="Nearby incidents">
@@ -301,7 +318,10 @@ a{color:inherit}
 
 <div class="pop" id="layers-pop" role="dialog" aria-label="Layers and settings">
   <h2>Layers</h2>
-  <label class="row"><span>Weather radar<small>NEXRAD composite, refreshed every 5 min</small></span><input class="sw" type="checkbox" id="l-radar"></label>
+  <label class="row"><span>Radar loop<small>Last hour of NEXRAD, 5-minute frames</small></span><input class="sw" type="checkbox" id="l-radar"></label>
+  <label class="row"><span>Satellite clouds<small>GOES-East, last 2 hours. Runs about 40 min behind</small></span><input class="sw" type="checkbox" id="l-sat"></label>
+  <label class="row"><span>Wind flow<small>Animated surface wind around you</small></span><input class="sw" type="checkbox" id="l-flow"></label>
+  <label class="row"><span>Lightning<small>Live strikes, Blitzortung.org. Uses about 10 MB an hour while open</small></span><input class="sw" type="checkbox" id="l-ltg"></label>
   <label class="row"><span>Wind wedge<small>Shows what is upwind of you</small></span><input class="sw" type="checkbox" id="l-wind"></label>
   <label class="row"><span>Road closures and jams<small>Waze, published by TxDOT</small></span><input class="sw" type="checkbox" id="l-jams"></label>
   <label class="row"><span>Traffic cameras<small>Houston TranStar roadside stills</small></span><input class="sw" type="checkbox" id="l-cams"></label>
@@ -400,7 +420,7 @@ const S = {
   loc: saved.loc || { ...DEFAULT_LOC },
   radius: RADII.includes(saved.radius) ? saved.radius : 5,
   cats: Object.assign(Object.fromEntries(Object.keys(CATS).map(k => [k, true])), saved.cats || {}),
-  layers: Object.assign({ radar: true, wind: true, jams: true, air: true, gauges: true, cams: false }, saved.layers || {}),
+  layers: Object.assign({ radar: true, sat: false, flow: true, ltg: true, wind: true, jams: true, air: true, gauges: true, cams: false }, saved.layers || {}),
   chime: !!saved.chime, relay: saved.relay || '', follow: !!saved.follow, chatter: [], news: [], flights: [], flightSel: null, chatterCity: '', origin: null, autoRelay: '',
   items: new Map(), src: {}, seen: new Map(), token: 0,
   wind: null, cond: null, air: [], gauges: [], jamLines: [], cams: [], nearestAir: null,
@@ -816,6 +836,7 @@ const SOURCES = [
   { id: 'dallas', name: 'Dallas police active calls',     org: 'Dallas Police Department',  every: 120, run: fetchDallas, label: () => `${(S.items.get('dallas') || []).length} of ${S.dallasTotal || 0} calls placed`, gate: nearGate(32.7767, -96.797, 45, 'Only covers the City of Dallas'), url: 'https://www.dallasopendata.com/Public-Safety/Dallas-Police-Active-Calls/9fxf-t2tr', note: 'Every call officers are on. Published without coordinates, so only confident address matches are mapped.' },
   { id: 'nws',    name: 'Weather alerts',                 org: 'National Weather Service', every: 60,  run: fetchNWS,   url: 'https://www.weather.gov/', note: 'Every alert covering your exact point, plus warning polygons within 30 mi.' },
   { id: 'obs',    name: 'Wind and conditions',            org: 'Nearest NWS station',      every: 600, run: fetchObs, label: () => S.cond ? (S.cond.kind === 'model' ? 'model estimate' : 'station ' + S.cond.id) : '',   url: 'https://www.weather.gov/', note: 'Measured at the closest reporting station. Falls back to a model, and says so.' },
+  { id: 'ltg',    name: 'Lightning strikes',              org: 'Blitzortung.org community network', every: 20, run: fetchLightning, gate: () => S.layers.ltg ? null : 'Turned off in Layers', label: () => `${LTG.strikes.length} within 200 mi, 30 min · ${(LTG.bytes / 1e6).toFixed(1)} MB streamed`, url: 'https://map.blitzortung.org/', note: 'Live strikes from volunteer receivers. Strikes within 15 mi show in Nearby; within 6 mi is flagged serious.' },
   { id: 'lsr',    name: 'Storm spotter reports',          org: 'NWS via Iowa Mesonet',     every: 300, run: fetchLSR,   url: 'https://mesonet.agron.iastate.edu/lsr/', note: 'Ground reports from spotters, officials and the public, last 24 hours.' },
   { id: 'viirs',  name: 'Satellite heat detections',      org: 'NASA VIIRS via Esri',      every: 600, run: fetchVIIRS, url: 'https://firms.modaps.eosdis.nasa.gov/map/', note: 'Flares, plant fires and burns seen from orbit, last 48 hours. A few passes a day.' },
   { id: 'tceq',   name: 'Reported emission events',       org: 'Texas Commission on Environmental Quality', every: 1800, run: fetchTCEQ, relay: true, gate: () => texasGate() || (relayBase() ? null : 'Needs a relay. See Layers'), url: 'https://www2.tceq.texas.gov/oce/eer/', note: 'What plants themselves report: releases, flaring, upsets, for the past week. Often filed a day after the event.' },
@@ -970,7 +991,148 @@ function renderSources() {
 let map = null, mapReady = false, youMarker = null, ringMarkers = [], windMarker = null, popup = null, firstSymbol;
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const fc = features => ({ type: 'FeatureCollection', features });
-const radarTiles = () => [`https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png?t=${Math.floor(Date.now() / 3e5)}`];
+/* ---------------- weather loops: radar (IEM NEXRAD, 5-min frames) and satellite (NASA GIBS GOES-East, 10-min frames) */
+const NF = 12, RADAR_IDS = [...Array(NF).keys()].map(i => 'rdr-' + i), SAT_IDS = [...Array(NF).keys()].map(i => 'sat-' + i);
+const LOOP = { i: NF - 1, playing: !matchMedia('(prefers-reduced-motion: reduce)').matches, timer: 0, radarT: [], satT: [] };
+S.loop = LOOP; // visible in the console as vigil.loop, for troubleshooting
+const radarFrameTiles = (k, bust) => [`https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913${k ? '-m' + String(k * 5).padStart(2, '0') + 'm' : ''}/{z}/{x}/{y}.png?t=${bust}`];
+const satTiles = iso => [`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/GOES-East_ABI_GeoColor/default/${iso}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.jpg`];
+const iso10 = t => new Date(t).toISOString().slice(0, 17) + '00Z';
+function addLoopLayers(vis) {
+  const bust = Math.floor(Date.now() / 3e5);
+  for (let i = 0; i < NF; i++) {
+    map.addSource('src-' + RADAR_IDS[i], { type: 'raster', tiles: radarFrameTiles(NF - 1 - i, bust), tileSize: 256, ...(i === NF - 1 ? { attribution: 'Radar NOAA NEXRAD via IEM' } : {}) });
+    map.addLayer({ id: RADAR_IDS[i], type: 'raster', source: 'src-' + RADAR_IDS[i], layout: { visibility: vis(S.layers.radar) }, paint: { 'raster-opacity': i === NF - 1 ? 0.55 : 0, 'raster-fade-duration': 0 } }, firstSymbol);
+  }
+  const t0 = Math.floor(Date.now() / 6e5) * 6e5 - 60 * 6e4; // a safe guess until the real latest time is known
+  for (let i = 0; i < NF; i++) {
+    map.addSource('src-' + SAT_IDS[i], { type: 'raster', tiles: satTiles(iso10(t0 - (NF - 1 - i) * 6e5)), tileSize: 256, maxzoom: 7, ...(i === NF - 1 ? { attribution: 'Satellite NASA GIBS / NOAA GOES-East' } : {}) });
+    map.addLayer({ id: SAT_IDS[i], type: 'raster', source: 'src-' + SAT_IDS[i], layout: { visibility: vis(S.layers.sat) }, paint: { 'raster-opacity': i === NF - 1 ? 0.62 : 0, 'raster-fade-duration': 0 } }, RADAR_IDS[0]);
+  }
+}
+function probeImg(u) { return new Promise(res => { const i = new Image(); i.crossOrigin = 'anonymous'; const to = setTimeout(() => res(false), 8000); i.onload = () => { clearTimeout(to); res(true); }; i.onerror = () => { clearTimeout(to); res(false); }; i.src = u; }); }
+async function refreshLoops() { try { await refreshLoopsInner(); } catch (e) { LOOP.err = String(e && e.stack || e); } }
+async function refreshLoopsInner() {
+  LOOP.calls = (LOOP.calls || 0) + 1;
+  if (!map || !map.getSource('src-' + RADAR_IDS[0])) { LOOP.err = 'no radar source yet'; return; }
+  // radar: IEM names past frames by minutes before the latest national scan
+  let latest = Math.floor(Date.now() / 3e5) * 3e5;
+  try { const j = await get('https://mesonet.agron.iastate.edu/json/radar.py?operation=list&product=N0Q&radar=USCOMP', { timeout: 8000 }); const ts = Date.parse((j.scans || []).slice(-1)[0]?.ts?.replace('Z', ':00Z')); if (ts) latest = ts; } catch {}
+  const bust = Math.floor(Date.now() / 3e5);
+  LOOP.radarT = [...Array(NF).keys()].map(i => latest - (NF - 1 - i) * 3e5);
+  RADAR_IDS.forEach((id, i) => map.getSource('src-' + id)?.setTiles(radarFrameTiles(NF - 1 - i, bust)));
+  setFrame(LOOP.i);
+  // satellite: find the newest frame NASA has published (usually 30 to 50 min old). Only when the layer is on.
+  if (S.layers.sat) {
+    const z = 6, n = 2 ** z, x = Math.floor((S.loc.lon + 180) / 360 * n), y = Math.floor((1 - Math.log(Math.tan(rad(S.loc.lat)) + 1 / Math.cos(rad(S.loc.lat))) / Math.PI) / 2 * n);
+    let t = Math.floor(Date.now() / 6e5) * 6e5, found = 0;
+    for (let k = 0; k < 10 && !found; k++, t -= 6e5) if (await probeImg(satTiles(iso10(t))[0].replace('{z}', z).replace('{y}', y).replace('{x}', x))) found = t;
+    if (found) { LOOP.satT = [...Array(NF).keys()].map(i => found - (NF - 1 - i) * 6e5); SAT_IDS.forEach((id, i) => map.getSource('src-' + id)?.setTiles(satTiles(iso10(LOOP.satT[i])))); }
+  }
+  setFrame(LOOP.i);
+}
+function setFrame(i) {
+  LOOP.i = i; if (!mapReady) return;
+  RADAR_IDS.forEach((id, j) => map.getLayer(id) && map.setPaintProperty(id, 'raster-opacity', j === i ? 0.55 : 0));
+  SAT_IDS.forEach((id, j) => map.getLayer(id) && map.setPaintProperty(id, 'raster-opacity', j === i ? 0.62 : 0));
+  $('#pl-range').value = i;
+  const parts = [];
+  if (S.layers.radar && LOOP.radarT[i]) parts.push(`<b>Radar ${fmtClock(LOOP.radarT[i])}</b>`);
+  if (S.layers.sat && LOOP.satT[i]) parts.push(`${S.layers.radar ? 'Clouds' : '<b>Clouds'} ${fmtClock(LOOP.satT[i])}${S.layers.radar ? '' : '</b>'}`);
+  $('#pl-time').innerHTML = parts.join('') || '—';
+}
+function loopTick() { if (!LOOP.playing || document.hidden || !(S.layers.radar || S.layers.sat)) return; setFrame((LOOP.i + 1) % NF); clearTimeout(LOOP.timer); LOOP.timer = setTimeout(loopTick, LOOP.i === NF - 1 ? 1600 : 450); }
+function setPlaying(on) { LOOP.playing = on; $('#pl-ico').innerHTML = on ? '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>' : '<path d="M7 4l13 8-13 8z"/>'; $('#pl-play').setAttribute('aria-label', on ? 'Pause loop' : 'Play loop'); clearTimeout(LOOP.timer); if (on) LOOP.timer = setTimeout(loopTick, 450); }
+function updatePlayer() { const on = !!(S.layers.radar || S.layers.sat); $('#player').classList.toggle('on', on); if (on) { setFrame(LOOP.i); if (LOOP.playing) setPlaying(true); } else clearTimeout(LOOP.timer); }
+
+/* ---------------- wind flow: particles carried by a live grid of surface wind (Open-Meteo) */
+const FLOW = { grid: null, key: '', parts: [], raf: 0, last: 0, ctx: null };
+async function loadFlowGrid() {
+  if (!map || !S.layers.flow) return;
+  const b = map.getBounds(), w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth(), padX = (e - w) * 0.1, padY = (n - s) * 0.1;
+  const W = w - padX, E = e + padX, So = s - padY, N = n + padY, key = [W, E, So, N].map(v => v.toFixed(2)).join() + '|' + Math.floor(Date.now() / 9e5);
+  if (key === FLOW.key) return; FLOW.key = key;
+  const G = 9, lats = [], lons = [];
+  for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) { lats.push((So + (N - So) * r / (G - 1)).toFixed(3)); lons.push((W + (E - W) * c / (G - 1)).toFixed(3)); }
+  try {
+    const j = await get(`https://api.open-meteo.com/v1/forecast?latitude=${lats.join(',')}&longitude=${lons.join(',')}&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=mph`, { timeout: 15000 });
+    const arr = Array.isArray(j) ? j : [j], u = [], v = [], sp = [];
+    arr.forEach(p => { const s = p.current.wind_speed_10m, d = rad(p.current.wind_direction_10m + 180); u.push(s * Math.sin(d)); v.push(s * Math.cos(d)); sp.push(s); });
+    FLOW.grid = { W, E, S: So, N, G, u, v, max: Math.max(...sp, 1) };
+  } catch {}
+}
+function windAt(lon, lat) {
+  const g = FLOW.grid; if (!g) return null;
+  const fx = (lon - g.W) / (g.E - g.W) * (g.G - 1), fy = (lat - g.S) / (g.N - g.S) * (g.G - 1);
+  if (fx < 0 || fy < 0 || fx > g.G - 1 || fy > g.G - 1) return null;
+  const x0 = Math.min(g.G - 2, Math.floor(fx)), y0 = Math.min(g.G - 2, Math.floor(fy)), tx = fx - x0, ty = fy - y0, I = (r, c) => r * g.G + c;
+  const lerp = a => (a[I(y0, x0)] * (1 - tx) + a[I(y0, x0 + 1)] * tx) * (1 - ty) + (a[I(y0 + 1, x0)] * (1 - tx) + a[I(y0 + 1, x0 + 1)] * tx) * ty;
+  return [lerp(g.u), lerp(g.v)];
+}
+function flowReset(clearOnly) {
+  const c = $('#flow'); if (!FLOW.ctx) FLOW.ctx = c.getContext('2d');
+  const dpr = Math.min(2, devicePixelRatio || 1); if (c.width !== innerWidth * dpr || c.height !== innerHeight * dpr) { c.width = innerWidth * dpr; c.height = innerHeight * dpr; FLOW.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+  FLOW.ctx.clearRect(0, 0, innerWidth, innerHeight); FLOW.parts = []; FLOW.moving = clearOnly;
+}
+const spawn = () => ({ x: Math.random() * innerWidth, y: Math.random() * innerHeight, age: Math.floor(Math.random() * 80) });
+function startFlow() {
+  if (FLOW.raf || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const step = ts => {
+    FLOW.raf = requestAnimationFrame(step);
+    if (ts - FLOW.last < 33) return; FLOW.last = ts;
+    const ctx = FLOW.ctx; if (!ctx || !S.layers.flow || !FLOW.grid || document.hidden || FLOW.moving || !mapReady) return;
+    const want = Math.round(Math.min(900, innerWidth * innerHeight / 1400));
+    while (FLOW.parts.length < want) FLOW.parts.push(spawn());
+    ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = 'rgba(0,0,0,0.045)'; ctx.fillRect(0, 0, innerWidth, innerHeight);
+    ctx.globalCompositeOperation = 'source-over'; ctx.lineWidth = 1.3; ctx.lineCap = 'round';
+    for (const p of FLOW.parts) {
+      const ll = map.unproject([p.x, p.y]), wv = windAt(ll.lng, ll.lat);
+      if (!wv || ++p.age > 110) { Object.assign(p, spawn(), { age: 0 }); continue; }
+      const s = Math.hypot(wv[0], wv[1]), k = 0.24, nx = p.x + wv[0] * k, ny = p.y - wv[1] * k;
+      ctx.strokeStyle = `rgba(${s > 25 ? '255,214,170' : s > 12 ? '214,246,240' : '170,226,236'},${Math.min(0.9, 0.4 + s / 30)})`;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(nx, ny); ctx.stroke(); p.x = nx; p.y = ny;
+      if (p.x < 0 || p.y < 0 || p.x > innerWidth || p.y > innerHeight) Object.assign(p, spawn(), { age: 0 });
+    }
+  };
+  FLOW.raf = requestAnimationFrame(step);
+}
+
+/* ---------------- lightning: live strikes from the Blitzortung.org community network */
+const LTG = { ws: null, strikes: [], connectedAt: 0, lastMsg: 0, retry: 0, bytes: 0 };
+function ltgDecode(b) { // Blitzortung's stream is LZW-packed text
+  const e = {}, d = b.split(''); let c = d[0], f = c; const g = [c]; let o = 256;
+  for (let i = 1; i < d.length; i++) { const a = d[i].charCodeAt(0); const x = a < 256 ? d[i] : e[a] ? e[a] : f + c; g.push(x); c = x.charAt(0); e[o++] = f + c; f = x; }
+  return g.join('');
+}
+function ltgConnect() {
+  if (!S.layers.ltg || document.hidden || (LTG.ws && LTG.ws.readyState <= 1)) return;
+  const host = ['ws1', 'ws7', 'ws8'][LTG.retry % 3];
+  try { LTG.ws = new WebSocket(`wss://${host}.blitzortung.org/`); } catch { return; }
+  LTG.ws.onopen = () => { LTG.connectedAt = Date.now(); LTG.ws.send('{"a":111}'); };
+  LTG.ws.onmessage = ev => {
+    LTG.lastMsg = Date.now(); LTG.bytes += ev.data.length;
+    let m; try { m = JSON.parse(ltgDecode(ev.data)); } catch { return; }
+    if (typeof m.lat !== 'number') return;
+    if (Math.abs(m.lat - S.loc.lat) > 3.5 || Math.abs(m.lon - S.loc.lon) > 4) return; // keep about 200 mi around you
+    LTG.strikes.push({ t: Math.round(m.time / 1e6) || Date.now(), lat: m.lat, lon: m.lon });
+  };
+  LTG.ws.onclose = () => { LTG.ws = null; LTG.retry++; if (S.layers.ltg && !document.hidden) setTimeout(ltgConnect, Math.min(60e3, 3e3 * LTG.retry)); };
+}
+function ltgDisconnect() { if (LTG.ws) { LTG.ws.onclose = null; LTG.ws.close(); LTG.ws = null; } }
+function ltgDraw() {
+  const now = Date.now(); LTG.strikes = LTG.strikes.filter(s => now - s.t < 30 * 6e4);
+  if (mapReady && map.getSource('ltg')) map.getSource('ltg').setData(fc(LTG.strikes.map(s => ({ type: 'Feature', properties: { age: (now - s.t) / 6e4 }, geometry: { type: 'Point', coordinates: [s.lon, s.lat] } }))));
+}
+async function fetchLightning() {
+  ltgConnect();
+  if (!LTG.lastMsg && Date.now() - (LTG.connectedAt || Date.now()) > 90e3) throw new Error('strike stream not answering');
+  const now = Date.now(), near = LTG.strikes.filter(s => now - s.t < 15 * 6e4).map(s => ({ ...s, d: distMi(S.loc.lat, S.loc.lon, s.lat, s.lon) })).filter(s => s.d <= 15);
+  if (!near.length) return [];
+  const closest = near.reduce((a, b) => (a.d < b.d ? a : b)), newest = Math.max(...near.map(s => s.t)), close10 = near.some(s => s.d <= 6 && now - s.t < 10 * 6e4);
+  return [{ id: 'ltg-near', cat: 'weather', sev: close10 ? 3 : 2, title: `Lightning ${closest.d < 10 ? closest.d.toFixed(1) : Math.round(closest.d)} mi ${compass(bearing(S.loc.lat, S.loc.lon, closest.lat, closest.lon))}`, sub: `${near.length} ${near.length === 1 ? 'strike' : 'strikes'} within 15 mi in the last 15 min${close10 ? '. Within 6 mi: head indoors' : ''}`, lat: closest.lat, lon: closest.lon, t: newest, url: 'https://map.blitzortung.org/', facts: [['Closest strike', `${closest.d.toFixed(1)} mi, ${ago(closest.t)} ago`], ['Strikes within 15 mi', String(near.length)], ['Network', 'Blitzortung.org volunteer receivers']], long: 'Community-detected strikes. Positions are typically good to a few hundred meters, and some strikes are missed.', pin: true, srcTag: 'Blitzortung' }];
+}
+setInterval(() => { if (S.layers.ltg && !document.hidden) ltgDraw(); }, 2000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) ltgDisconnect(); else ltgConnect(); });
 function ringsFor(r) { return { 2: [1, 2], 5: [1, 3, 5], 10: [2, 5, 10], 25: [5, 10, 25] }[r] || [r]; }
 function circle(lat, lon, mi) { const c = []; for (let b = 0; b <= 360; b += 3) c.push(dest(lat, lon, b, mi)); return c; }
 
@@ -1001,8 +1163,7 @@ function setupLayers() {
   for (const l of layers) { try { if (l.type === 'background') map.setPaintProperty(l.id, 'background-color', '#0a0f14'); else if (l.type === 'fill' && /water|ocean|sea/i.test(l.id)) map.setPaintProperty(l.id, 'fill-color', '#0d1924'); } catch {} }
   Object.keys(CATS).forEach(k => { if (!map.hasImage('ic-' + k)) { const { img, px } = iconImage(k); map.addImage('ic-' + k, img, { pixelRatio: px }); } });
   const vis = on => on ? 'visible' : 'none', src = id => map.addSource(id, { type: 'geojson', data: EMPTY });
-  map.addSource('radar', { type: 'raster', tiles: radarTiles(), tileSize: 256, attribution: 'Radar NOAA NEXRAD via IEM' });
-  map.addLayer({ id: 'radar', type: 'raster', source: 'radar', layout: { visibility: vis(S.layers.radar) }, paint: { 'raster-opacity': 0.5, 'raster-fade-duration': 0 } }, firstSymbol);
+  addLoopLayers(vis);
   ['wx', 'wedge', 'rings', 'jams', 'cams', 'gauges', 'air', 'trk', 'inc', 'sel'].forEach(src);
   const sevCol = ['match', ['get', 'sev'], 4, SEV_COLOR[4], 3, SEV_COLOR[3], 2, SEV_COLOR[2], SEV_COLOR[1]];
   map.addLayer({ id: 'wx-fill', type: 'fill', source: 'wx', paint: { 'fill-color': sevCol, 'fill-opacity': ['case', ['get', 'here'], 0.07, 0.13] } }, firstSymbol);
@@ -1033,7 +1194,13 @@ function setupLayers() {
   ['inc-icon', 'air', 'gauges', 'cams', 'wx-fill'].forEach(l => { map.on('mouseenter', l, () => map.getCanvas().style.cursor = 'pointer'); map.on('mouseleave', l, () => map.getCanvas().style.cursor = ''); });
 
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) { let last = 0; const loop = ts => { requestAnimationFrame(loop); if (document.hidden || ts - last < 40 || !map.getLayer('inc-pulse')) return; last = ts; const k = (ts % 2200) / 2200; map.setPaintProperty('inc-pulse', 'circle-radius', 12 + k * 26); map.setPaintProperty('inc-pulse', 'circle-stroke-opacity', 0.7 * (1 - k)); }; requestAnimationFrame(loop); }
-  setInterval(() => { const s = map.getSource('radar'); if (s && s.setTiles && !document.hidden) s.setTiles(radarTiles()); }, 3e5);
+  refreshLoops(); setInterval(() => { if (!document.hidden) refreshLoops(); }, 5 * 6e4);
+  map.addSource('ltg', { type: 'geojson', data: EMPTY, attribution: 'Lightning © Blitzortung.org contributors' });
+  map.addLayer({ id: 'ltg', type: 'circle', source: 'ltg', layout: { visibility: vis(S.layers.ltg) }, paint: { 'circle-radius': ['interpolate', ['linear'], ['get', 'age'], 0, 5, 30, 2.5], 'circle-color': ['interpolate', ['linear'], ['get', 'age'], 0, '#ffffff', 2, '#ffe680', 10, '#ffb13d', 30, '#ff4d5e'], 'circle-opacity': ['interpolate', ['linear'], ['get', 'age'], 0, 1, 30, 0.35], 'circle-stroke-color': '#0a0f14', 'circle-stroke-width': 0.8 } });
+  map.addLayer({ id: 'ltg-new', type: 'circle', source: 'ltg', filter: ['<', ['get', 'age'], 1], layout: { visibility: vis(S.layers.ltg) }, paint: { 'circle-radius': 14, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#fff6c2', 'circle-stroke-width': 1.5, 'circle-stroke-opacity': 0.8 } });
+  map.on('movestart', () => flowReset(true)); map.on('moveend', () => { flowReset(false); loadFlowGrid(); });
+  flowReset(false); loadFlowGrid(); startFlow(); updatePlayer();
+  addEventListener('resize', () => flowReset(false));
 }
 
 const isPhone = () => matchMedia('(max-width:760px)').matches;
@@ -1151,8 +1318,16 @@ $('#l-follow').checked = S.follow; $('#l-follow').onchange = e => setFollow(e.ta
 $('#loc-form').addEventListener('submit', e => { e.preventDefault(); const q = $('#loc-q').value.trim(); if (q) searchPlace(q); });
 $('#relay-q').value = S.relay;
 $('#relay-form').addEventListener('submit', e => { e.preventDefault(); let v = $('#relay-q').value.trim(); if (v && !/^https?:\/\//.test(v)) v = 'https://' + v; S.relay = v; $('#relay-q').value = v; persist(); S.src.tceq.next = 0; S.src.tceq.at = 0; S.src.tceq.loaded = false; tick(); closePops(); setTab('src'); });
-const LAYER_IDS = { radar: ['radar'], wind: ['wedge', 'wedge-line'], jams: ['jams', 'closed'], cams: ['cams'], air: ['air'], gauges: ['gauges'] };
-Object.keys(LAYER_IDS).forEach(k => { const el = $('#l-' + k); el.checked = S.layers[k]; el.onchange = () => { S.layers[k] = el.checked; persist(); if (mapReady) LAYER_IDS[k].forEach(id => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', el.checked ? 'visible' : 'none')); lastGeoKey = ''; schedule(); }; });
+const LAYER_IDS = { radar: RADAR_IDS, sat: SAT_IDS, ltg: ['ltg', 'ltg-new'], flow: [], wind: ['wedge', 'wedge-line'], jams: ['jams', 'closed'], cams: ['cams'], air: ['air'], gauges: ['gauges'] };
+Object.keys(LAYER_IDS).forEach(k => { const el = $('#l-' + k); el.checked = S.layers[k]; el.onchange = () => { S.layers[k] = el.checked; persist(); if (mapReady) LAYER_IDS[k].forEach(id => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', el.checked ? 'visible' : 'none')); lastGeoKey = ''; afterLayerToggle(k); schedule(); }; });
+function afterLayerToggle(k) {
+  if (k === 'radar' || k === 'sat') { if (k === 'sat' && el_on('sat')) refreshLoops(); updatePlayer(); }
+  if (k === 'flow') { flowReset(false); if (S.layers.flow) { FLOW.key = ''; loadFlowGrid(); } }
+  if (k === 'ltg') { if (S.layers.ltg) ltgConnect(); else { ltgDisconnect(); LTG.strikes = []; ltgDraw(); } S.src.ltg.next = 0; }
+}
+const el_on = k => S.layers[k];
+$('#pl-play').onclick = () => setPlaying(!LOOP.playing);
+$('#pl-range').oninput = e => { setPlaying(false); setFrame(+e.target.value); };
 $('#l-chime').checked = S.chime; $('#l-chime').onchange = e => { S.chime = e.target.checked; persist(); if (S.chime) { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); chimeFor([{ sev: 3, atPoint: true }]); } catch {} } };
 document.addEventListener('pointerdown', e => { if (!e.target.closest('.pop,#loc-btn,#layers-btn')) closePops(); if (S.chime && !audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch {} } });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closePops(); });
