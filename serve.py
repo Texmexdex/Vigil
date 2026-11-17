@@ -23,7 +23,9 @@ ALLOWED = {
     "api.gdeltproject.org",     # news headline search
     "news.google.com",          # news headline search (backup)
 }
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 5599
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+PORT = int(ARGS[0]) if ARGS else 5599
+RELAY_ONLY = "--relay-only" in sys.argv  # when exposed through a tunnel: answer /relay and nothing else
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -42,6 +44,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parts = urllib.parse.urlsplit(self.path)
         if parts.path.rstrip("/") == "/relay":
             return self.relay(urllib.parse.parse_qs(parts.query).get("u", [""])[0])
+        if RELAY_ONLY:
+            return self.reply(404, b"Not found")
         return super().do_GET()
 
     def reply(self, status, body, ctype="text/plain; charset=utf-8"):
@@ -73,5 +77,5 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 if __name__ == "__main__":
-    print(f"Vigil is at http://127.0.0.1:{PORT}  (Ctrl+C to stop)")
+    print(f"Vigil {'relay' if RELAY_ONLY else 'is'} at http://127.0.0.1:{PORT}{'/relay' if RELAY_ONLY else ''}  (Ctrl+C to stop)")
     Server(("127.0.0.1", PORT), Handler).serve_forever()

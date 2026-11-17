@@ -16,15 +16,33 @@ const ALLOWED = new Set([
 ]);
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, OPTIONS' };
 
-async function relay(request) {
+// Aircraft feeds refuse Cloudflare's servers, so these go through the relay on your own computer
+// (serve.py behind a Cloudflare quick tunnel). Its current address is kept in KV under "homeRelay".
+const HOME_ONLY = new Set(['opendata.adsb.fi', 'api.adsb.lol', 'opensky-network.org']);
+
+async function viaHome(env, target, ttl) {
+  const home = env.VIGIL && await env.VIGIL.get('homeRelay', { cacheTtl: 60 });
+  if (!home) return null;
+  try {
+    const r = await fetch(`${home.replace(/\/+$/, '')}/relay?u=${encodeURIComponent(target)}`, { cf: { cacheTtl: ttl, cacheEverything: true } });
+    if (r.status === 530 || r.status === 502 || r.status === 1033) return null; // tunnel down: fall back to trying directly
+    return new Response(r.body, { status: r.status, headers: { ...CORS, 'content-type': r.headers.get('content-type') || 'text/plain', 'cache-control': `public, max-age=${ttl}`, 'x-vigil-via': 'home' } });
+  } catch { return null; }
+}
+
+async function relay(request, env = {}) {
   if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
   if (request.method !== 'GET') return new Response('GET only', { status: 405, headers: CORS });
   const raw = new URL(request.url).searchParams.get('u');
-  if (!raw) return new Response('vigil-relay ok', { headers: CORS });
+  if (!raw) {
+    const home = env.VIGIL && await env.VIGIL.get('homeRelay', { cacheTtl: 60 });
+    return new Response('vigil-relay ok' + (home ? ' · home relay registered' : ' · no home relay'), { headers: CORS });
+  }
   let target;
   try { target = new URL(raw); } catch { return new Response('Bad address', { status: 400, headers: CORS }); }
   if (target.protocol !== 'https:' || !ALLOWED.has(target.hostname)) return new Response('Host not allowed', { status: 403, headers: CORS });
   const ttl = /adsb|opensky/.test(target.hostname) ? 20 : 120; // aircraft go stale in seconds
+  if (HOME_ONLY.has(target.hostname)) { const r = await viaHome(env, target.toString(), ttl); if (r) return r; }
   try {
     const up = await fetch(target.toString(), { headers: { 'user-agent': 'vigil-relay (personal emergency monitor)' }, cf: { cacheTtl: ttl, cacheEverything: true } });
     return new Response(up.body, { status: up.status, headers: { ...CORS, 'content-type': up.headers.get('content-type') || 'text/plain', 'cache-control': `public, max-age=${ttl}` } });
@@ -33,10 +51,23 @@ async function relay(request) {
   }
 }
 
+// Your PC calls this when its tunnel starts, so the Worker knows where to send aircraft requests.
+// It needs the private key stored as the REGISTER_KEY secret, and accepts only quick-tunnel addresses.
+async function register(request, env) {
+  if (request.method !== 'POST') return new Response('POST only', { status: 405 });
+  const key = request.headers.get('x-vigil-key') || '';
+  if (!env.REGISTER_KEY || key.length !== env.REGISTER_KEY.length || key !== env.REGISTER_KEY) return new Response('Forbidden', { status: 403 });
+  const url = (await request.text()).trim();
+  if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url)) return new Response('Not a quick-tunnel address', { status: 400 });
+  await env.VIGIL.put('homeRelay', url);
+  return new Response('registered ' + url);
+}
+
 export default {
-  async fetch(request) {
+  async fetch(request, env = {}) {
     const path = new URL(request.url).pathname.replace(/\/+$/, '');
-    if (path === '/relay') return relay(request);
+    if (path === '/relay') return relay(request, env);
+    if (path === '/register') return register(request, env);
     if (path === '' || path === '/index.html') return new Response(PAGE, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' } });
     return new Response('Not found', { status: 404 });
   },

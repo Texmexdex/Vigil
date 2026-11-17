@@ -1,0 +1,4 @@
+.relay-key
+.wrangler/
+node_modules/
+*.txt
